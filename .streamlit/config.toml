@@ -1,0 +1,23 @@
+# Настройки Streamlit для продакшн-деплоя. Порт и адрес сюда специально не
+# добавлены — их задаёт команда запуска (--server.port $PORT --server.address
+# 0.0.0.0), т.к. конкретный порт назначает сама платформа деплоя (Render и т.п.)
+# и может отличаться при каждом запуске.
+
+[theme]
+# Фирменные цвета BI Group — совпадают с константами BI_BLUE* в common.py.
+# Работает как подложка для нативных виджетов Streamlit, которые не
+# переопределены собственным CSS приложения.
+primaryColor = "#0B5FA6"
+backgroundColor = "#FFFFFF"
+secondaryBackgroundColor = "#F5F9FD"
+textColor = "#1A1A2E"
+font = "sans serif"
+
+[client]
+# Прячет кнопку "Deploy" и лишние пункты меню Streamlit Community Cloud —
+# приложение внутреннее, эти пункты не нужны и не должны быть видны.
+toolbarMode = "minimal"
+
+[browser]
+# Не отправлять телеметрию использования во внешний сервис Streamlit.
+gatherUsageStats = false
