@@ -11,7 +11,14 @@ services:
     region: virginia   # ближе всего к Neon (DATABASE_URL в us-east-1)
     plan: starter
     buildCommand: pip install -r requirements.txt
-    startCommand: streamlit run app.py --server.port $PORT --server.address 0.0.0.0
+    # "python -m streamlit ...", а не просто "streamlit ..." — у playwright
+    # внутри пакета лежит свой package.json (для встроенного Node-драйвера
+    # браузера), и Render из-за этого подмешивает поверх Python ещё и
+    # Node-окружение, из-за чего PATH при запуске оказывается не тем, куда
+    # pip ставил пакеты, и голая команда "streamlit" не находится. Через
+    # "python -m" пакет ищется тем же интерпретатором, что делал pip install,
+    # а не через PATH.
+    startCommand: python -m streamlit run app.py --server.port $PORT --server.address 0.0.0.0
     envVars:
       - key: DATABASE_URL
         sync: false

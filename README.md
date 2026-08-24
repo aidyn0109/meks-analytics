@@ -195,15 +195,21 @@ PostgreSQL (Npgsql) — тем же DATABASE_URL, что и приложение
 2. В Render создайте **Web Service**, укажите репозиторий.
 3. Environment: **Python 3**.
 4. Build command: `pip install -r requirements.txt`
-5. Start command: `streamlit run app.py --server.port $PORT --server.address 0.0.0.0`
+5. Start command: `python -m streamlit run app.py --server.port $PORT --server.address 0.0.0.0`
 6. В Environment добавьте переменные `DATABASE_URL`, `APP_USERNAME`,
    `APP_PASSWORD`, `AUTH_SECRET`, `DEEPSEEK_API_KEY` — те же значения, что
    в вашем `.env`.
 
-Если после деплоя в логах ошибка `streamlit: command not found` — значит
-Build command не сохранился/не заполнен (шаг 4 пропущен), и pip install
-не выполнялся. Поправьте в Settings сервиса и запустите Manual Deploy
-заново.
+Если после деплоя в логах ошибка `streamlit: command not found`, при этом
+в логах сборки видно, что streamlit успешно установился — значит дело не
+в Build command, а в том, что Render заодно определил проект как Node.js
+(из-за `package.json` встроенного Node-драйвера внутри пакета playwright)
+и подмешал поверх Python своё Node-окружение, из-за чего PATH при запуске
+ведёт не туда, куда pip ставил пакеты. Решение — start command именно
+`python -m streamlit ...`, а не голое `streamlit ...` (см. `render.yaml`).
+Если же в логах сборки установка streamlit вообще не запускалась — тогда
+причина в другом: Build command не сохранился/не заполнен, поправьте в
+Settings сервиса.
 
 Раздел «Парсинг данных» на облачном сервере работать не будет и не должен
 — ему нужен видимый браузер на компьютере пользователя для входа по ЭЦП
