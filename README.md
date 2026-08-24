@@ -182,13 +182,28 @@ PostgreSQL (Npgsql) — тем же DATABASE_URL, что и приложение
 
 ## Деплой на Render
 
+**Вариант А — через Blueprint (рекомендуется):** в репозитории уже есть
+`render.yaml` с корректными build/start-командами и регионом (`virginia` —
+рядом с Neon, см. `DATABASE_URL`). В Render: **New → Blueprint**, укажите
+этот репозиторий — Render сам создаст сервис по `render.yaml`. При первом
+деплое он попросит ввести значения переменных окружения (`DATABASE_URL`,
+`APP_USERNAME`, `APP_PASSWORD`, `AUTH_SECRET`, `DEEPSEEK_API_KEY`) — сами
+значения в `render.yaml` не хранятся.
+
+**Вариант Б — вручную:**
 1. Запушьте этот репозиторий в свой GitHub.
 2. В Render создайте **Web Service**, укажите репозиторий.
-3. Build command: `pip install -r requirements.txt`
-4. Start command: `streamlit run app.py --server.port $PORT --server.address 0.0.0.0`
-5. В Environment добавьте переменные `DATABASE_URL`, `APP_USERNAME`,
+3. Environment: **Python 3**.
+4. Build command: `pip install -r requirements.txt`
+5. Start command: `streamlit run app.py --server.port $PORT --server.address 0.0.0.0`
+6. В Environment добавьте переменные `DATABASE_URL`, `APP_USERNAME`,
    `APP_PASSWORD`, `AUTH_SECRET`, `DEEPSEEK_API_KEY` — те же значения, что
    в вашем `.env`.
+
+Если после деплоя в логах ошибка `streamlit: command not found` — значит
+Build command не сохранился/не заполнен (шаг 4 пропущен), и pip install
+не выполнялся. Поправьте в Settings сервиса и запустите Manual Deploy
+заново.
 
 Раздел «Парсинг данных» на облачном сервере работать не будет и не должен
 — ему нужен видимый браузер на компьютере пользователя для входа по ЭЦП

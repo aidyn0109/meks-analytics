@@ -1,0 +1,25 @@
+# Render Blueprint — описывает деплой в коде, а не в полях дашборда, чтобы
+# нельзя было случайно оставить Build Command пустым (см. ошибку
+# "streamlit: command not found" — она означает, что pip install вообще не
+# выполнялся). Использование: Render Dashboard -> New -> Blueprint -> этот
+# репозиторий; секреты (DATABASE_URL и т.п.) Render запросит отдельно и не
+# будет хранить их здесь, в git.
+services:
+  - type: web
+    name: meks-analytics
+    runtime: python
+    region: virginia   # ближе всего к Neon (DATABASE_URL в us-east-1)
+    plan: starter
+    buildCommand: pip install -r requirements.txt
+    startCommand: streamlit run app.py --server.port $PORT --server.address 0.0.0.0
+    envVars:
+      - key: DATABASE_URL
+        sync: false
+      - key: APP_USERNAME
+        sync: false
+      - key: APP_PASSWORD
+        sync: false
+      - key: AUTH_SECRET
+        sync: false
+      - key: DEEPSEEK_API_KEY
+        sync: false
