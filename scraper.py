@@ -19,6 +19,7 @@ meks.zakup.sk.kz.
 осознанный выбор, а не недосмотр.
 """
 
+import random
 import re
 import time
 from pathlib import Path
@@ -27,6 +28,49 @@ import requests
 import urllib3
 
 urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
+
+# Пауза между запросами в "тесных" циклах (постраничный список конкурсов,
+# проверка ЕНС ТРУ по каждому новому кандидату) — сама по себе не спасает от
+# 429 полностью, но сильно снижает шанс на него нарваться, когда новых
+# конкурсов или страниц набирается много.
+_POLITE_DELAY = 0.25
+
+
+def _get_with_retry(url, *, max_attempts=5, backoff_base=1.6, **kwargs):
+    """
+    requests.get с повтором при HTTP 429 (портал ограничивает частоту
+    запросов) и временных 502/503/504 — без этого разовый всплеск
+    активности (например, проверка ЕНС ТРУ по паре десятков новых конкурсов
+    подряд) мог полностью оборвать парсинг посреди работы с ошибкой "429".
+    Уважает заголовок Retry-After, если сервер его прислал; иначе —
+    экспоненциальная пауза со случайным разбросом (джиттер), чтобы повторные
+    запросы не били "в такт" и не накладывались друг на друга.
+    """
+    kwargs.setdefault("verify", False)
+    kwargs.setdefault("timeout", 30)
+    last_exc = None
+    for attempt in range(1, max_attempts + 1):
+        try:
+            resp = requests.get(url, **kwargs)
+        except requests.RequestException as e:
+            last_exc = e
+            resp = None
+        else:
+            if resp.status_code not in (429, 502, 503, 504):
+                return resp
+            last_exc = requests.HTTPError(f"{resp.status_code} для {url}", response=resp)
+
+        if attempt == max_attempts:
+            break
+
+        retry_after = resp.headers.get("Retry-After") if resp is not None else None
+        try:
+            wait = float(retry_after) if retry_after else backoff_base**attempt
+        except ValueError:
+            wait = backoff_base**attempt
+        time.sleep(wait + random.uniform(0, 0.5))
+
+    raise last_exc
 
 BASE_URL = "https://meks.zakup.sk.kz"
 LIST_API = f"{BASE_URL}/api/pub/application-announcement-311/list"
@@ -75,9 +119,7 @@ def get_enstru_name(announcement_id):
     конкурс, который на самом деле нужно скачать).
     """
     try:
-        resp = requests.get(
-            f"{ANNOUNCEMENT_DETAIL_API}/{announcement_id}", verify=False, timeout=30
-        )
+        resp = _get_with_retry(f"{ANNOUNCEMENT_DETAIL_API}/{announcement_id}")
         resp.raise_for_status()
         return (resp.json().get("data") or {}).get("enstruName") or ""
     except Exception:
@@ -92,11 +134,9 @@ def fetch_completed_announcements(page_size=50, max_pages=500):
     results = []
     page = 0
     while page < max_pages:
-        resp = requests.get(
+        resp = _get_with_retry(
             LIST_API,
             params={"status": "COMPETITION_COMPLETED", "page": page, "size": page_size},
-            verify=False,
-            timeout=30,
         )
         resp.raise_for_status()
         data = resp.json()
@@ -113,6 +153,7 @@ def fetch_completed_announcements(page_size=50, max_pages=500):
         if data.get("last", True):
             break
         page += 1
+        time.sleep(_POLITE_DELAY)
     return results
 
 
@@ -151,7 +192,9 @@ def find_new_tenders(announcements, existing_tender_nos, status_cb=None):
             continue
         if status_cb:
             status_cb(f"Проверяю техническую спецификацию конкурса №{no}…")
-        if is_technical_supervision(get_enstru_name(a["announcement_id"])):
+        enstru_name = get_enstru_name(a["announcement_id"])
+        time.sleep(_POLITE_DELAY)
+        if is_technical_supervision(enstru_name):
             skipped_supervision += 1
             continue
         seen.add(no)
@@ -164,9 +207,7 @@ def get_results_protocol(announcement_id):
     Описание документа "Протокол итогов" для конкурса (через публичный API),
     или None, если он ещё не опубликован.
     """
-    resp = requests.get(
-        PROTOCOLS_API, params={"announcementId": announcement_id}, verify=False, timeout=30
-    )
+    resp = _get_with_retry(PROTOCOLS_API, params={"announcementId": announcement_id})
     resp.raise_for_status()
     for doc in resp.json():
         if doc.get("documentSubType") == "RESULTS":
