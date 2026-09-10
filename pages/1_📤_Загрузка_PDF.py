@@ -4,7 +4,7 @@ import streamlit as st
 
 import crud
 from common import get_session
-from parser import parse_tender_pdf
+from parser import is_technical_supervision, parse_tender_pdf
 from ui_components import render_tender_editor
 
 st.title("📤 Загрузка протокола (PDF)")
@@ -51,6 +51,17 @@ edited = render_tender_editor(
     key_prefix="upload",
     category_options=crud.list_lot_categories(session),
 )
+
+is_tech_supervision = is_technical_supervision(edited.get("title")) or any(
+    is_technical_supervision(lot.get("name")) for lot in edited.get("lots", [])
+)
+if is_tech_supervision:
+    st.warning(
+        "⚠️ Похоже, это услуги технического надзора (видно по названию конкурса "
+        "или перечню закупаемых работ) — такие конкурсы обычно не сохраняют в базу. "
+        "Проверьте перечень работ ниже и, если это действительно технадзор, "
+        "просто не нажимайте «Сохранить в базу»."
+    )
 
 already_exists = bool(edited["tender_no"]) and crud.tender_exists(session, edited["tender_no"])
 

@@ -53,9 +53,7 @@ if st.button("🔎 Запустить парсинг", type="primary"):
         with st.spinner("Ищу завершённые конкурсы на портале…"):
             announcements = scraper.fetch_completed_announcements()
             existing_nos = {t.tender_no for t in crud.list_tenders(session)}
-            new_tenders, skipped_supervision = scraper.find_new_tenders(
-                announcements, existing_nos, status_cb=lambda msg: status_placeholder.info(msg)
-            )
+            new_tenders, skipped_supervision = scraper.find_new_tenders(announcements, existing_nos)
 
         supervision_note = (
             f" ({skipped_supervision} пропущено как услуги технического надзора)"
