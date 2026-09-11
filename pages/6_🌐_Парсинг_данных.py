@@ -46,29 +46,64 @@ else:
 
 st.divider()
 
+# Историю выше показываем и на сервере (это просто данные из базы), а вот
+# сам запуск там невозможен — см. scraper.is_headless_server.
+if scraper.is_headless_server():
+    st.error(
+        "**Запускать парсинг можно только локально, не на сервере.**\n\n"
+        "Сейчас приложение открыто в задеплоенной версии. Для скачивания протоколов "
+        "портал требует вход по ЭЦП, а для этого нужно настоящее окно браузера на "
+        "вашем компьютере — на сервере нет ни экрана, ни вашей ЭЦП.\n\n"
+        "Запустите приложение у себя (`streamlit run app.py`) и откройте этот раздел там. "
+        "Все остальные разделы на сервере работают как обычно."
+    )
+    st.stop()
+
+full_scan = st.checkbox(
+    "Полный обход архива (долго)",
+    help=(
+        "Обычно парсер читает список конкурсов с начала и останавливается, дойдя "
+        "до тех, что уже есть в базе — свежие конкурсы всегда в начале списка. "
+        "Портал отвечает медленно (до ~30 секунд на страницу), поэтому полный "
+        "обход всего архива занимает десятки минут и нужен только при первом "
+        "запуске на пустой базе или после долгого перерыва."
+    ),
+)
+
 status_placeholder = st.empty()
 
 if st.button("🔎 Запустить парсинг", type="primary"):
     try:
         with st.spinner("Ищу завершённые конкурсы на портале…"):
-            announcements = scraper.fetch_completed_announcements()
             existing_nos = {t.tender_no for t in crud.list_tenders(session)}
-            new_tenders, skipped_supervision = scraper.find_new_tenders(announcements, existing_nos)
+            new_tenders, scan_stats = scraper.find_new_tenders(
+                existing_nos,
+                full_scan=full_scan,
+                status_cb=lambda msg: status_placeholder.info(msg),
+            )
 
+        skipped_supervision = scan_stats["skipped_supervision"]
         supervision_note = (
             f" ({skipped_supervision} пропущено как услуги технического надзора)"
             if skipped_supervision
             else ""
         )
+        if scan_stats["stopped_early"]:
+            st.caption(
+                f"Просмотрено {scan_stats['scanned']} конкурсов "
+                f"({scan_stats['pages']} стр.) — дальше по списку идут только те, что уже "
+                f"есть в базе, поэтому обход остановлен досрочно. Чтобы пройти весь архив, "
+                f"включите «Полный обход архива»."
+            )
 
         if not new_tenders:
             st.success(
-                f"Новых конкурсов не найдено — проверено {len(announcements)}, "
+                f"Новых конкурсов не найдено — проверено {scan_stats['scanned']}, "
                 f"остальные уже есть в базе{supervision_note}."
             )
         else:
             st.info(
-                f"Найдено {len(new_tenders)} новых конкурсов из {len(announcements)} "
+                f"Найдено {len(new_tenders)} новых конкурсов из {scan_stats['scanned']} "
                 f"проверенных{supervision_note}. Сейчас откроется окно браузера — войдите на портале "
                 f"через ЭЦП, автоматизация продолжит работу после входа."
             )

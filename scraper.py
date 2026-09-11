@@ -19,7 +19,9 @@ meks.zakup.sk.kz.
 осознанный выбор, а не недосмотр.
 """
 
+import os
 import random
+import sys
 import time
 from pathlib import Path
 
@@ -30,27 +32,58 @@ from parser import is_technical_supervision
 
 urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 
-# Пауза между запросами в "тесном" цикле постраничного списка конкурсов —
-# сама по себе не спасает от 429 полностью, но сильно снижает шанс на него
-# нарваться, когда страниц набирается много.
+# Пауза между запросами в "тесном" цикле постраничного списка конкурсов.
 _POLITE_DELAY = 0.25
 
+# Портал отвечает медленно и неровно: замеры с рабочего компьютера дают
+# 17-32 секунды на один запрос списка, причём до 4 секунд из них уходит
+# только на TLS-рукопожатие. Поэтому (а) таймаут щедрый, иначе запрос
+# рвётся сам по себе; (б) все запросы идут через одну сессию с keep-alive,
+# чтобы рукопожатие выполнялось один раз, а не на каждый запрос.
+_REQUEST_TIMEOUT = 90
 
-def _get_with_retry(url, *, max_attempts=5, backoff_base=1.6, **kwargs):
+# Обычные браузерные заголовки: с "python-requests/2.x" в User-Agent любой
+# защитный контур перед сайтом видит автоматизацию и вправе резать такой
+# трафик жёстче обычного.
+_BROWSER_HEADERS = {
+    "User-Agent": (
+        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
+        "(KHTML, like Gecko) Chrome/139.0.0.0 Safari/537.36"
+    ),
+    "Accept": "application/json, text/plain, */*",
+    "Accept-Language": "ru-RU,ru;q=0.9,en-US;q=0.8,en;q=0.7",
+    "Referer": "https://meks.zakup.sk.kz/board/announcements?page=1&status=COMPETITION_COMPLETED",
+}
+
+_session = None
+
+
+def _get_session():
+    """Одна сессия на весь процесс: keep-alive экономит TLS-рукопожатие
+    (до 4 секунд) на каждом запросе после первого."""
+    global _session
+    if _session is None:
+        _session = requests.Session()
+        _session.headers.update(_BROWSER_HEADERS)
+        _session.verify = False
+    return _session
+
+
+def _get_with_retry(url, *, max_attempts=4, backoff_base=1.6, **kwargs):
     """
-    requests.get с повтором при HTTP 429 (портал ограничивает частоту
-    запросов) и временных 502/503/504 — без этого разовый всплеск
-    активности мог полностью оборвать парсинг посреди работы с ошибкой
-    "429". Уважает заголовок Retry-After, если сервер его прислал; иначе —
-    экспоненциальная пауза со случайным разбросом (джиттер), чтобы повторные
-    запросы не били "в такт" и не накладывались друг на друга.
+    GET с повтором при HTTP 429 (портал ограничивает частоту запросов),
+    временных 502/503/504 и сетевых обрывов/таймаутов — портал регулярно
+    отдаёт то и другое, и без повтора любой единичный сбой обрывал весь
+    парсинг на середине. Уважает заголовок Retry-After, если сервер его
+    прислал; иначе — экспоненциальная пауза со случайным разбросом
+    (джиттер), чтобы повторные запросы не били "в такт".
     """
-    kwargs.setdefault("verify", False)
-    kwargs.setdefault("timeout", 30)
+    kwargs.setdefault("timeout", _REQUEST_TIMEOUT)
+    session = _get_session()
     last_exc = None
     for attempt in range(1, max_attempts + 1):
         try:
-            resp = requests.get(url, **kwargs)
+            resp = session.get(url, **kwargs)
         except requests.RequestException as e:
             last_exc = e
             resp = None
@@ -78,74 +111,128 @@ PROTOCOLS_API = f"{BASE_URL}/api/pub/application-announcement-311/all-protocols"
 LOGIN_URL = f"{BASE_URL}/auth/login"
 
 
-def fetch_completed_announcements(page_size=50, max_pages=500):
+def is_headless_server() -> bool:
     """
-    Постранично собирает все конкурсы со статусом "Конкурс завершён" через
-    публичный (не требующий входа) API портала.
+    True, если приложение запущено на облачном сервере, где раздел
+    "Парсинг данных" работать не может в принципе: для входа по ЭЦП нужно
+    настоящее окно браузера на компьютере пользователя, а на сервере нет
+    ни экрана, ни ЭЦП.
+
+    Нужно именно для того, чтобы не дать запустить заведомо обречённый
+    прогон: обход списка конкурсов идёт десятки минут и десятки мегабайт,
+    и на сервере он не падает сразу, а сначала надолго вешает страницу,
+    после чего соединение браузера с приложением обрывается — снаружи это
+    выглядит как невнятная ошибка связи, а не как "здесь так нельзя".
     """
-    results = []
-    page = 0
-    while page < max_pages:
+    if os.getenv("RENDER") or os.getenv("RENDER_SERVICE_ID"):
+        return True
+    # На Linux без DISPLAY окно браузера открыть нечем (обычный признак
+    # headless-сервера); на Windows/macOS экран есть всегда.
+    return sys.platform.startswith("linux") and not os.getenv("DISPLAY")
+
+
+def _parse_announcement(item):
+    return {
+        "announcement_id": item.get("id"),
+        "tender_no": (item.get("concursNum") or "").strip(),
+        "title": (item.get("concursName") or "").strip(),
+        "customer_name": (item.get("customerName") or "").strip(),
+        "total_sum": (item.get("data") or {}).get("totalSumWithoutNDS"),
+    }
+
+
+def find_new_tenders(existing_tender_nos, *, page_size=50, max_pages=500,
+                      full_scan=False, stop_after_known_pages=2, status_cb=None):
+    """
+    Постранично обходит завершённые конкурсы портала и возвращает те,
+    которых ещё нет в базе (existing_tender_nos) и которые не являются
+    услугами технического надзора по названию.
+
+    Почему обход с ранней остановкой, а не "скачать весь список, потом
+    отфильтровать": портал кладёт в каждый элемент списка ВЕСЬ документ
+    объявления целиком, поэтому одна страница из 50 конкурсов весит ~42 МБ
+    и приходит 17-32 секунды (замеры с рабочего компьютера), а весь архив
+    из ~370 конкурсов — это ~340 МБ и десятки минут блокирующей работы на
+    каждый запуск. Свежие конкурсы лежат в начале списка, а дальше идут
+    те, что уже давно в базе, — как только подряд попадается
+    stop_after_known_pages страниц, целиком состоящих из уже известных базе
+    конкурсов, обход прекращается.
+
+    Увеличивать page_size бессмысленно и вредно: при size=200 и больше
+    ответ (168+ МБ) не доходит вообще — запрос рвётся по таймауту.
+
+    full_scan=True отключает раннюю остановку и проходит весь архив до
+    конца — это нужно при первом запуске на пустой базе или после долгого
+    перерыва, когда новые для базы конкурсы могут лежать далеко не только
+    на первых страницах.
+
+    Технадзор фильтруется только по названию конкурса и без единого
+    дополнительного запроса на кандидата: раньше здесь ещё донабирали по
+    полю "Наименование ЕНС ТРУ" карточки конкурса отдельным запросом на
+    каждого нового кандидата, что удваивало-утраивало и без того долгий
+    обход. Часть технадзора с нейтральным названием теперь проскочит сюда —
+    это ожидаемо: его протокол скачается, но при загрузке в базу на
+    странице "Загрузка PDF" сработает та же проверка уже по перечню
+    закупаемых работ из самого протокола (см. parser.is_technical_supervision)
+    и покажет предупреждение.
+
+    Возвращает (new_tenders, stats), где stats — словарь с количеством
+    просмотренных конкурсов/страниц, отсеянного технадзора и признаком
+    того, что обход остановлен досрочно.
+    """
+    existing = set(existing_tender_nos)
+    seen = set()
+    new_ones = []
+    stats = {"scanned": 0, "pages": 0, "skipped_supervision": 0, "stopped_early": False}
+    known_pages_in_row = 0
+
+    for page in range(max_pages):
         resp = _get_with_retry(
             LIST_API,
             params={"status": "COMPETITION_COMPLETED", "page": page, "size": page_size},
         )
         resp.raise_for_status()
         data = resp.json()
-        for item in data.get("content", []):
-            results.append(
-                {
-                    "announcement_id": item.get("id"),
-                    "tender_no": (item.get("concursNum") or "").strip(),
-                    "title": (item.get("concursName") or "").strip(),
-                    "customer_name": (item.get("customerName") or "").strip(),
-                    "total_sum": (item.get("data") or {}).get("totalSumWithoutNDS"),
-                }
+        items = data.get("content", [])
+        stats["pages"] += 1
+        stats["scanned"] += len(items)
+
+        page_new_count = 0
+        for item in items:
+            a = _parse_announcement(item)
+            no = a["tender_no"]
+            if not no or no in seen or no in existing:
+                continue
+            if is_technical_supervision(a["title"]):
+                stats["skipped_supervision"] += 1
+                continue
+            seen.add(no)
+            new_ones.append(a)
+            page_new_count += 1
+
+        if status_cb:
+            status_cb(
+                f"Просмотрено {stats['scanned']} конкурсов "
+                f"(страниц: {stats['pages']}), новых найдено: {len(new_ones)}…"
             )
-        if data.get("last", True):
+
+        if data.get("last", True) or not items:
             break
-        page += 1
+
+        if not full_scan:
+            # Признак "дошли до старого" — страница не дала ни одного
+            # конкурса, который стоило бы скачать. Именно так, а не
+            # "все конкурсы страницы есть в базе": технадзор в базу не
+            # попадает никогда, поэтому на любой старой странице он выглядел
+            # бы как незнакомый конкурс и остановка не срабатывала бы вовсе.
+            known_pages_in_row = 0 if page_new_count else known_pages_in_row + 1
+            if known_pages_in_row >= stop_after_known_pages:
+                stats["stopped_early"] = True
+                break
+
         time.sleep(_POLITE_DELAY)
-    return results
 
-
-def find_new_tenders(announcements, existing_tender_nos):
-    """
-    Конкурсы из announcements, номера которых ещё нет в базе
-    (existing_tender_nos), за исключением услуг технического надзора — они
-    вне профиля закупок и не должны попадать в парсинг/скачивание.
-
-    Фильтр — только по названию самого конкурса (см. is_technical_supervision)
-    и без единого дополнительного запроса на кандидата: раньше здесь ещё
-    донабирали по полю "Наименование ЕНС ТРУ" карточки конкурса отдельным
-    запросом на каждого нового кандидата — при большом числе новых конкурсов
-    за день это давало десятки лишних запросов подряд и упирало парсинг в
-    лимит частоты запросов портала (HTTP 429), обрывая его на середине.
-
-    Часть конкурсов технадзора с нейтральным названием всё равно проскочит
-    сюда — это ожидаемо и не страшно: их протокол всё равно скачается и
-    попадёт на проверку человеком на странице "Загрузка PDF", а не сразу
-    в базу — там та же самая проверка (is_technical_supervision) применяется
-    к перечню закупаемых работ уже из самого протокола (см. parser.py) и
-    показывает явное предупреждение перед сохранением.
-
-    Возвращает (new_tenders, skipped_supervision) — второе число (сколько
-    отсеяно по названию) для отображения в интерфейсе.
-    """
-    existing = set(existing_tender_nos)
-    seen = set()
-    new_ones = []
-    skipped_supervision = 0
-    for a in announcements:
-        no = a["tender_no"]
-        if not no or no in existing or no in seen:
-            continue
-        if is_technical_supervision(a["title"]):
-            skipped_supervision += 1
-            continue
-        seen.add(no)
-        new_ones.append(a)
-    return new_ones, skipped_supervision
+    return new_ones, stats
 
 
 def get_results_protocol(announcement_id):
