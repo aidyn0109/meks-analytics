@@ -68,8 +68,14 @@ MEKS analytics/
 
 4. Запустите:
    ```
-   streamlit run app.py
+   py -m streamlit run app.py
    ```
+
+   Именно `py -m streamlit`, а не просто `streamlit`: на Windows команда
+   `streamlit` часто не попадает в PATH, и запуск падает с «Термин
+   "streamlit" не распознается…». Через `-m` модуль ищется тем же
+   интерпретатором, которым ставились зависимости. На macOS/Linux
+   аналогично работает `python3 -m streamlit run app.py`.
 
    При первом запуске процесса приложение само создаст все нужные таблицы
    в базе (`Base.metadata.create_all`, результат кешируется на время жизни
