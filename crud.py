@@ -219,11 +219,11 @@ def get_tender_dict(session, tender_no: str):
         "customer_address": tender.customer_address or "",
         "protocol_date": tender.protocol_date.strftime("%d.%m.%Y") if tender.protocol_date else "",
         "protocol_time": tender.protocol_datetime.strftime("%H:%M") if tender.protocol_datetime else "",
+        "is_failed": bool(tender.is_failed),
         "lots": [
             {
                 "name": l.name,
                 "category": l.category or "",
-                "is_failed": bool(l.is_failed),
                 "quantity": l.quantity,
                 "unit_price": l.unit_price,
                 "allocated_amount": l.allocated_amount,
@@ -263,9 +263,9 @@ def tender_snapshot(tender: Tender) -> dict:
         "customer_address": tender.customer_address,
         "protocol_date": _ser(tender.protocol_date),
         "protocol_datetime": _ser(tender.protocol_datetime),
+        "is_failed": bool(tender.is_failed),
         "lots": [
-            {"name": l.name, "category": l.category, "is_failed": bool(l.is_failed),
-             "quantity": _ser(l.quantity),
+            {"name": l.name, "category": l.category, "quantity": _ser(l.quantity),
              "unit_price": _ser(l.unit_price), "allocated_amount": _ser(l.allocated_amount)}
             for l in tender.lots
         ],
@@ -389,6 +389,7 @@ def save_tender(session, data: dict, source: str, username: str,
         existing.customer_id = customer_id
         existing.protocol_date = protocol_date_val
         existing.protocol_datetime = protocol_dt
+        existing.is_failed = bool(data.get("is_failed"))
         # Один DELETE на таблицу вместо построчного session.delete() в
         # цикле — не нужно тянуть уже загруженные строки заново, и это один
         # запрос вместо N. bid_criteria удалятся каскадно на уровне БД
@@ -408,6 +409,7 @@ def save_tender(session, data: dict, source: str, username: str,
             customer_id=customer_id,
             protocol_date=protocol_date_val,
             protocol_datetime=protocol_dt,
+            is_failed=bool(data.get("is_failed")),
             source_file=source_file,
             file_hash=file_hash,
         )
@@ -422,7 +424,6 @@ def save_tender(session, data: dict, source: str, username: str,
                 tender_no=tender_no,
                 name=lot.get("name"),
                 category=(lot.get("category") or "").strip() or None,
-                is_failed=bool(lot.get("is_failed")),
                 quantity=_to_float(lot.get("quantity")),
                 unit_price=_to_float(lot.get("unit_price")),
                 allocated_amount=_to_float(lot.get("allocated_amount")),
@@ -508,11 +509,11 @@ def save_tender(session, data: dict, source: str, username: str,
         "customer_address": tender.customer_address,
         "protocol_date": _ser(protocol_date_val),
         "protocol_datetime": _ser(protocol_dt),
+        "is_failed": bool(data.get("is_failed")),
         "lots": [
             {
                 "name": lot.get("name"),
                 "category": (lot.get("category") or "").strip() or None,
-                "is_failed": bool(lot.get("is_failed")),
                 "quantity": _to_float(lot.get("quantity")),
                 "unit_price": _to_float(lot.get("unit_price")),
                 "allocated_amount": _to_float(lot.get("allocated_amount")),

@@ -12,29 +12,20 @@ import streamlit as st
 DEFAULT_LOT_CATEGORIES = ["Водоотведение", "Водоснабжение", "Теплоснабжение", "Электроснабжение"]
 
 
-def _lots_df(lots, default_is_failed=False):
-    """
-    default_is_failed — чем заполнять галочку "Конкурс не состоялся" у строк,
-    где её ещё нет: при загрузке нового протокола это признак, распознанный
-    парсером из самого документа (см. parser._parse_failed_status), поэтому
-    отмечать строки руками обычно не требуется.
-    """
+def _lots_df(lots):
     if not lots:
         lots = [{"name": "", "category": "", "quantity": None, "unit_price": None, "allocated_amount": None}]
-    # Нормализуем: гарантируем наличие ключей "category"/"is_failed" в каждой строке
+    # Нормализуем: гарантируем наличие ключа "category" в каждой строке
     normalized = []
     for lot in lots:
         normalized.append({
             "name": lot.get("name", ""),
             "category": lot.get("category", ""),
-            "is_failed": bool(lot.get("is_failed", default_is_failed)),
             "quantity": lot.get("quantity"),
             "unit_price": lot.get("unit_price"),
             "allocated_amount": lot.get("allocated_amount"),
         })
-    return pd.DataFrame(normalized)[
-        ["name", "category", "is_failed", "quantity", "unit_price", "allocated_amount"]
-    ]
+    return pd.DataFrame(normalized)[["name", "category", "quantity", "unit_price", "allocated_amount"]]
 
 
 def _commission_df(members):
@@ -149,6 +140,17 @@ def render_tender_editor(data: dict, key_prefix: str, category_options=None) -> 
             step=60,
         )
 
+    is_failed = st.checkbox(
+        "Конкурс не состоялся",
+        value=bool(data.get("is_failed")),
+        key=f"{key_prefix}_is_failed",
+        help=(
+            "Проставляется автоматически, если в протоколе есть фраза "
+            "«Признать закупку … несостоявшейся» — снимите или поставьте вручную, "
+            "если нужно."
+        ),
+    )
+
     st.subheader("Позиции закупки (лоты)")
 
     # Список категорий работ для выпадающего списка: стандартные + уже
@@ -183,7 +185,7 @@ def render_tender_editor(data: dict, key_prefix: str, category_options=None) -> 
                 st.rerun()
 
     lots_result = st.data_editor(
-        _lots_df(data.get("lots"), default_is_failed=bool(data.get("is_failed"))),
+        _lots_df(data.get("lots")),
         num_rows="dynamic",
         use_container_width=True,
         key=f"{key_prefix}_lots",
@@ -191,13 +193,6 @@ def render_tender_editor(data: dict, key_prefix: str, category_options=None) -> 
             "name": "Наименование",
             "category": st.column_config.SelectboxColumn(
                 "Категория работ", options=st.session_state[category_state_key]
-            ),
-            "is_failed": st.column_config.CheckboxColumn(
-                "Не состоялся",
-                help=(
-                    "Конкурс признан несостоявшимся. Проставляется автоматически, "
-                    "если это написано в самом протоколе — поправьте, если нужно."
-                ),
             ),
             "quantity": st.column_config.NumberColumn("Количество"),
             "unit_price": st.column_config.NumberColumn("Цена за ед., тенге"),
@@ -288,6 +283,7 @@ def render_tender_editor(data: dict, key_prefix: str, category_options=None) -> 
         "customer_address": customer_address.strip(),
         "protocol_date": _parse_date_from_widget(protocol_date),
         "protocol_time": _parse_time_from_widget(protocol_time),
+        "is_failed": bool(is_failed),
         "lots": lots_result.to_dict("records"),
         "commission_members": commission_result.to_dict("records"),
         "bids": [],

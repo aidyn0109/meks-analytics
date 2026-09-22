@@ -27,6 +27,11 @@ class Tender(Base):
     customer_address = Column(Text)
     protocol_date = Column(Date)
     protocol_datetime = Column(DateTime)
+    # Конкурс признан несостоявшимся — признак всего конкурса, а не
+    # отдельной позиции закупки. Проставляется автоматически при разборе
+    # протокола: parser находит в нём фразу "Признать закупку …
+    # несостоявшейся" (см. parser._parse_failed_status).
+    is_failed = Column(Boolean, default=False, index=True)
     source_file = Column(Text)                              # имя загруженного PDF
     file_hash = Column(String)                               # sha256 файла (информационно)
     loaded_at = Column(DateTime(timezone=True), server_default=func.now())
@@ -65,13 +70,6 @@ class Lot(Base):
     tender_no = Column(String, ForeignKey("tenders.tender_no", ondelete="CASCADE"), nullable=False, index=True)
     name = Column(Text)
     category = Column(Text)
-    # Конкурс признан несостоявшимся. Хранится на уровне позиции закупки (а
-    # не тендера) сознательно: отчёты в Power BI строятся по lots, и так
-    # фильтр по этому признаку доступен там напрямую, без связи с tenders.
-    # Проставляется автоматически при разборе протокола (parser определяет
-    # фразу "Признать закупку … несостоявшейся") сразу во все позиции, так
-    # что вручную отмечать построчно — и рассогласовать строки — не нужно.
-    is_failed = Column(Boolean, default=False)
     quantity = Column(Numeric)
     unit_price = Column(Numeric)
     allocated_amount = Column(Numeric)
