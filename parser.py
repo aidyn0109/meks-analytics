@@ -228,6 +228,32 @@ def _parse_header(full_text: str, data: dict):
             data["customer_address"] = clean(m.group(1))
 
 
+def _parse_failed_status(full_text: str, data: dict):
+    """
+    Конкурс, признанный несостоявшимся, отличается от обычного только
+    заключительной фразой протокола: «Признать закупку … несостоявшейся.
+    Причина: …». Всё остальное (шапка, комиссия, перечень работ, заявки,
+    критерии) в таком протоколе оформлено ровно так же, поэтому отдельный
+    парсер не нужен — достаточно распознать этот признак и причину.
+
+    Причина ищется именно после слова «несостоявшейся», а не по первому
+    встречному «Причина:» — такой заголовок есть ещё и у колонки таблицы
+    отклонённых заявок.
+    """
+    if not re.search(r"несостоявш", full_text, re.IGNORECASE):
+        return
+
+    data["is_failed"] = True
+    m = re.search(
+        r"несостоявш\w*\s*\.?\s*Причина:\s*(.+?)"
+        r"(?=\s*(?:Бет\s*/\s*Страница|Құжат|Документ сформирован)|$)",
+        full_text,
+        re.IGNORECASE | re.DOTALL,
+    )
+    if m:
+        data["failed_reason"] = clean(m.group(1))
+
+
 def _merge_paginated_tables(all_tables):
     """
     pdfplumber отдаёт отдельный объект таблицы на каждой странице, даже если
@@ -261,6 +287,8 @@ def parse_tender_pdf(file_bytes: bytes) -> dict:
         "customer_address": "",
         "protocol_date": "",
         "protocol_time": "",
+        "is_failed": False,
+        "failed_reason": "",
         "lots": [],
         "commission_members": [],
         "bids": [],
@@ -277,6 +305,7 @@ def parse_tender_pdf(file_bytes: bytes) -> dict:
         all_tables = _merge_paginated_tables(all_tables)
 
     _parse_header(full_text, data)
+    _parse_failed_status(full_text, data)
 
     for table in all_tables:
         if not table or not table[0]:

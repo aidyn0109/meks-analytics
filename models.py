@@ -65,6 +65,13 @@ class Lot(Base):
     tender_no = Column(String, ForeignKey("tenders.tender_no", ondelete="CASCADE"), nullable=False, index=True)
     name = Column(Text)
     category = Column(Text)
+    # Конкурс признан несостоявшимся. Хранится на уровне позиции закупки (а
+    # не тендера) сознательно: отчёты в Power BI строятся по lots, и так
+    # фильтр по этому признаку доступен там напрямую, без связи с tenders.
+    # Проставляется автоматически при разборе протокола (parser определяет
+    # фразу "Признать закупку … несостоявшейся") сразу во все позиции, так
+    # что вручную отмечать построчно — и рассогласовать строки — не нужно.
+    is_failed = Column(Boolean, default=False)
     quantity = Column(Numeric)
     unit_price = Column(Numeric)
     allocated_amount = Column(Numeric)
@@ -166,6 +173,10 @@ class ScrapeDownload(Base):
 
     id = Column(Integer, primary_key=True)
     run_id = Column(String, index=True)     # общий для всех строк одного запуска
+    # Какой раздел запускал обход: "completed" (завершённые конкурсы) или
+    # "failed" (несостоявшиеся). Без этого признака страницы показывали бы
+    # друг другу чужую "последнюю сессию" — таблица-то общая.
+    scan_type = Column(String, index=True, default="completed")
     tender_no = Column(String, index=True)
     concurs_name = Column(Text)
     total_sum = Column(Numeric)

@@ -52,8 +52,15 @@ _BROWSER_HEADERS = {
     ),
     "Accept": "application/json, text/plain, */*",
     "Accept-Language": "ru-RU,ru;q=0.9,en-US;q=0.8,en;q=0.7",
-    "Referer": "https://meks.zakup.sk.kz/board/announcements?page=1&status=COMPETITION_COMPLETED",
+    "Referer": "https://meks.zakup.sk.kz/board/announcements",
 }
+
+# Статусы конкурсов на портале — те же значения, что подставляются в адрес
+# страницы списка (?status=...). Завершённые и несостоявшиеся обходятся
+# одинаково: API, документ протокола (тип RESULTS) и сам протокол по
+# структуре у них совпадают, отличается только этот параметр.
+STATUS_COMPLETED = "COMPETITION_COMPLETED"
+STATUS_FAILED = "COMPETITION_FAILED"
 
 _session = None
 
@@ -141,10 +148,12 @@ def _parse_announcement(item):
     }
 
 
-def find_new_tenders(existing_tender_nos, *, page_size=50, max_pages=500,
+def find_new_tenders(existing_tender_nos, *, portal_status=STATUS_COMPLETED,
+                      page_size=50, max_pages=500,
                       full_scan=False, stop_after_known_pages=2, status_cb=None):
     """
-    Постранично обходит завершённые конкурсы портала и возвращает те,
+    Постранично обходит конкурсы портала с заданным статусом
+    (portal_status — STATUS_COMPLETED или STATUS_FAILED) и возвращает те,
     которых ещё нет в базе (existing_tender_nos) и которые не являются
     услугами технического надзора по названию.
 
@@ -189,7 +198,7 @@ def find_new_tenders(existing_tender_nos, *, page_size=50, max_pages=500,
     for page in range(max_pages):
         resp = _get_with_retry(
             LIST_API,
-            params={"status": "COMPETITION_COMPLETED", "page": page, "size": page_size},
+            params={"status": portal_status, "page": page, "size": page_size},
         )
         resp.raise_for_status()
         data = resp.json()

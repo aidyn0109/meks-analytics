@@ -12,7 +12,7 @@ import re
 from datetime import datetime, date
 from decimal import Decimal
 
-from sqlalchemy import select, delete, func, case
+from sqlalchemy import select, delete, func, case, or_
 from sqlalchemy.orm import selectinload
 
 from models import (
@@ -223,6 +223,7 @@ def get_tender_dict(session, tender_no: str):
             {
                 "name": l.name,
                 "category": l.category or "",
+                "is_failed": bool(l.is_failed),
                 "quantity": l.quantity,
                 "unit_price": l.unit_price,
                 "allocated_amount": l.allocated_amount,
@@ -263,7 +264,8 @@ def tender_snapshot(tender: Tender) -> dict:
         "protocol_date": _ser(tender.protocol_date),
         "protocol_datetime": _ser(tender.protocol_datetime),
         "lots": [
-            {"name": l.name, "category": l.category, "quantity": _ser(l.quantity),
+            {"name": l.name, "category": l.category, "is_failed": bool(l.is_failed),
+             "quantity": _ser(l.quantity),
              "unit_price": _ser(l.unit_price), "allocated_amount": _ser(l.allocated_amount)}
             for l in tender.lots
         ],
@@ -420,6 +422,7 @@ def save_tender(session, data: dict, source: str, username: str,
                 tender_no=tender_no,
                 name=lot.get("name"),
                 category=(lot.get("category") or "").strip() or None,
+                is_failed=bool(lot.get("is_failed")),
                 quantity=_to_float(lot.get("quantity")),
                 unit_price=_to_float(lot.get("unit_price")),
                 allocated_amount=_to_float(lot.get("allocated_amount")),
@@ -509,6 +512,7 @@ def save_tender(session, data: dict, source: str, username: str,
             {
                 "name": lot.get("name"),
                 "category": (lot.get("category") or "").strip() or None,
+                "is_failed": bool(lot.get("is_failed")),
                 "quantity": _to_float(lot.get("quantity")),
                 "unit_price": _to_float(lot.get("unit_price")),
                 "allocated_amount": _to_float(lot.get("allocated_amount")),
@@ -579,14 +583,17 @@ def save_customer_region(session, customer_id: int, region_number: int, region_n
 
 def log_scrape_download(session, run_id: str, tender_no: str, concurs_name: str,
                          total_sum, filename: str = None, status: str = "success",
-                         reason: str = None):
-    """Записывает один результат сессии парсинга (раздел "Парсинг данных") —
-    как успешно скачанный протокол (status="success", filename задан), так и
-    неудачную попытку (status="failed", reason — причина). Коммит делает
-    вызывающая сторона (по одному разу на всю сессию, а не на каждую запись)."""
+                         reason: str = None, scan_type: str = "completed"):
+    """Записывает один результат сессии парсинга (разделы "Парсинг данных" и
+    "Парсинг несостоявшихся") — как успешно скачанный протокол
+    (status="success", filename задан), так и неудачную попытку
+    (status="failed", reason — причина). scan_type разделяет запуски двух
+    разделов между собой. Коммит делает вызывающая сторона (по одному разу
+    на всю сессию, а не на каждую запись)."""
     session.add(
         ScrapeDownload(
             run_id=run_id,
+            scan_type=scan_type,
             tender_no=tender_no,
             concurs_name=concurs_name,
             total_sum=total_sum,
@@ -597,11 +604,19 @@ def log_scrape_download(session, run_id: str, tender_no: str, concurs_name: str,
     )
 
 
-def get_last_scrape_session(session):
-    """Все строки последней сессии скачивания (раздел "Парсинг данных"), или
-    пустой список, если парсинг ещё не запускали."""
+def get_last_scrape_session(session, scan_type: str = "completed"):
+    """Все строки последней сессии скачивания нужного раздела (scan_type),
+    или пустой список, если такой парсинг ещё не запускали.
+
+    Строки, записанные до появления scan_type, считаются относящимися к
+    завершённым конкурсам — тогда другого раздела просто не существовало."""
+    type_filter = ScrapeDownload.scan_type == scan_type
+    if scan_type == "completed":
+        type_filter = or_(type_filter, ScrapeDownload.scan_type.is_(None))
+
     last_run = session.execute(
         select(ScrapeDownload.run_id)
+        .where(type_filter)
         .order_by(ScrapeDownload.downloaded_at.desc())
         .limit(1)
     ).scalar_one_or_none()

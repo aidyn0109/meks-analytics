@@ -178,6 +178,10 @@ def render_home():
         '15.3 15.3 0 0 1-4-9 15.3 15.3 0 0 1 4-9z"/>',
         "#3949AB",
     )
+    ICON_SCRAPE_FAILED = _icon(
+        '<circle cx="12" cy="12" r="9"/><line x1="5.6" y1="5.6" x2="18.4" y2="18.4"/>',
+        "#5B6B7F",
+    )
     ICON_AI = _icon(
         '<path d="M12 3l1.8 4.6L18 9l-4.2 1.4L12 15l-1.8-4.6L6 9l4.2-1.4L12 3z"/>'
         '<path d="M19 15l.7 1.8L21.5 17.5l-1.8.7L19 20l-.7-1.8-1.8-.7 1.8-.7L19 15z"/>',
@@ -196,6 +200,8 @@ def render_home():
          "Привяжите регион к подрядчикам и заказчикам."),
         (ICON_SCRAPE, "#E8EAF9", "Парсинг данных", page_scraper,
          "Найдите на портале новые завершённые конкурсы и скачайте протоколы итогов."),
+        (ICON_SCRAPE_FAILED, "#EDF0F4", "Парсинг несостоявшихся", page_scraper_failed,
+         "То же самое, но по конкурсам со статусом «Конкурс не состоялся»."),
         (ICON_AI, "#F0EDFC", "ИИ-ассистент", page_ai,
          "Прогноз баллов подрядчика по будущему конкурсу на основе истории заявок."),
         (ICON_LOG, "#E8F1FB", "Журнал изменений", page_log,
@@ -248,10 +254,15 @@ page_scraper = st.Page(
 page_ai = st.Page(
     "pages/7_🤖_ИИ_ассистент.py", title="ИИ-ассистент", icon="🤖", url_path="ai-assistant"
 )
+page_scraper_failed = st.Page(
+    "pages/8_🚫_Парсинг_несостоявшихся.py", title="Парсинг несостоявшихся",
+    icon="🚫", url_path="scraping-failed",
+)
 
 pg = st.navigation(
     {
-        "": [page_home, page_upload, page_browse, page_regions, page_scraper, page_ai, page_log],
+        "": [page_home, page_upload, page_browse, page_regions, page_scraper,
+             page_scraper_failed, page_ai, page_log],
     }
 )
 
