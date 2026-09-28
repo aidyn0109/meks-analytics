@@ -5,6 +5,12 @@ pdfplumber==0.11.10
 pandas==2.3.2
 python-dotenv==1.2.2
 requests==2.34.2
-playwright==1.62.0
 python-docx==1.1.2
 truststore==0.10.4
+
+# playwright сюда НЕ добавлять: он нужен только разделам парсинга, а они
+# работают исключительно локально (порталу нужен вход по ЭЦП с вашей
+# машины). На сервере он не только бесполезен — из-за package.json внутри
+# его пакета Render дополнительно ставит Node.js, что удлиняет сборку и
+# утяжеляет инстанс. Локально ставится отдельно, см. README:
+#   pip install playwright==1.62.0 && playwright install chromium

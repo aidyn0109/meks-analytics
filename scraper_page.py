@@ -106,7 +106,7 @@ def render_scraper_page(*, scan_type, portal_status, title, subject_accusative,
                 # этого статуса: номера у завершённых и несостоявшихся не
                 # пересекаются, но так гарантированно не скачается повторно
                 # то, что уже загружено другим разделом.
-                existing_nos = {t.tender_no for t in crud.list_tenders(session)}
+                existing_nos = crud.list_tender_numbers(session)
                 new_tenders, scan_stats = scraper.find_new_tenders(
                     existing_nos,
                     portal_status=portal_status,
@@ -114,12 +114,6 @@ def render_scraper_page(*, scan_type, portal_status, title, subject_accusative,
                     status_cb=lambda msg: status_placeholder.info(msg),
                 )
 
-            skipped_supervision = scan_stats["skipped_supervision"]
-            supervision_note = (
-                f" ({skipped_supervision} пропущено как услуги технического надзора)"
-                if skipped_supervision
-                else ""
-            )
             if scan_stats["stopped_early"]:
                 st.caption(
                     f"Просмотрено {scan_stats['scanned']} конкурсов "
@@ -131,12 +125,12 @@ def render_scraper_page(*, scan_type, portal_status, title, subject_accusative,
             if not new_tenders:
                 st.success(
                     f"Новых конкурсов не найдено — проверено {scan_stats['scanned']}, "
-                    f"остальные уже есть в базе{supervision_note}."
+                    f"все они уже есть в базе."
                 )
             else:
                 st.info(
                     f"Найдено {len(new_tenders)} новых конкурсов из {scan_stats['scanned']} "
-                    f"проверенных{supervision_note}. Сейчас откроется окно браузера — войдите на портале "
+                    f"проверенных. Сейчас откроется окно браузера — войдите на портале "
                     f"через ЭЦП, автоматизация продолжит работу после входа."
                 )
 

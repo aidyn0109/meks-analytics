@@ -4,9 +4,6 @@ from common import BI_BLUE, BI_BLUE_DARK, BI_BLUE_LIGHT, check_auth, init_databa
 
 st.set_page_config(page_title="МЭКС analytics", page_icon="📊", layout="wide")
 
-check_auth()
-init_database()
-
 
 def render_home():
     st.markdown(
@@ -259,12 +256,36 @@ page_scraper_failed = st.Page(
     icon="🚫", url_path="scraping-failed",
 )
 
+# Навигация объявляется ПЕРВОЙ — до проверки входа и до обращения к базе.
+# Именно она сообщает Streamlit, какие адреса у страниц существуют. Раньше
+# выше стоял check_auth(), который на экране входа останавливает скрипт, —
+# и Streamlit просто не успевал узнать про /log и остальные адреса. Из-за
+# этого стоило потерять сессию (сервер перезапустился, оборвался веб-сокет)
+# и обновить страницу на адресе раздела, как вместо входа показывалось
+# "The page that you have requested does not seem to exist".
 pg = st.navigation(
     {
         "": [page_home, page_upload, page_browse, page_regions, page_scraper,
              page_scraper_failed, page_ai, page_log],
     }
 )
+
+# Экран входа: сам прячет боковую панель своим CSS, поэтому объявленная
+# выше навигация на нём не видна.
+check_auth()
+
+# База нужна уже после входа. Обращение к ней тоже идёт после navigation:
+# создание недостающих таблиц лезет в Neon, а база бывает недоступна
+# (просыпается, моргнула сеть) — это не повод "терять" страницы.
+try:
+    init_database()
+except Exception as e:
+    st.error(
+        f"Нет связи с базой данных: {e}\n\n"
+        f"Обновите страницу через несколько секунд — база могла просто "
+        f"просыпаться после простоя."
+    )
+    st.stop()
 
 render_sidebar()
 pg.run()

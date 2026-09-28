@@ -28,8 +28,6 @@ from pathlib import Path
 import requests
 import urllib3
 
-from parser import is_technical_supervision
-
 urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 
 # Пауза между запросами в "тесном" цикле постраничного списка конкурсов.
@@ -154,8 +152,14 @@ def find_new_tenders(existing_tender_nos, *, portal_status=STATUS_COMPLETED,
     """
     Постранично обходит конкурсы портала с заданным статусом
     (portal_status — STATUS_COMPLETED или STATUS_FAILED) и возвращает те,
-    которых ещё нет в базе (existing_tender_nos) и которые не являются
-    услугами технического надзора по названию.
+    которых ещё нет в базе (existing_tender_nos).
+
+    Единственный критерий отбора — отсутствие номера конкурса в базе.
+    Раньше здесь ещё отсеивался технадзор по названию конкурса, но теперь
+    такие конкурсы тоже нужны в базе, поэтому скачивается всё подряд.
+    Побочный эффект: протокол, который скачали, но в базу не загрузили,
+    будет скачиваться заново на каждом запуске — база и есть отметка
+    "этот протокол уже взят".
 
     Почему обход с ранней остановкой, а не "скачать весь список, потом
     отфильтровать": портал кладёт в каждый элемент списка ВЕСЬ документ
@@ -175,24 +179,14 @@ def find_new_tenders(existing_tender_nos, *, portal_status=STATUS_COMPLETED,
     перерыва, когда новые для базы конкурсы могут лежать далеко не только
     на первых страницах.
 
-    Технадзор фильтруется только по названию конкурса и без единого
-    дополнительного запроса на кандидата: раньше здесь ещё донабирали по
-    полю "Наименование ЕНС ТРУ" карточки конкурса отдельным запросом на
-    каждого нового кандидата, что удваивало-утраивало и без того долгий
-    обход. Часть технадзора с нейтральным названием теперь проскочит сюда —
-    это ожидаемо: его протокол скачается, но при загрузке в базу на
-    странице "Загрузка PDF" сработает та же проверка уже по перечню
-    закупаемых работ из самого протокола (см. parser.is_technical_supervision)
-    и покажет предупреждение.
-
     Возвращает (new_tenders, stats), где stats — словарь с количеством
-    просмотренных конкурсов/страниц, отсеянного технадзора и признаком
-    того, что обход остановлен досрочно.
+    просмотренных конкурсов/страниц и признаком того, что обход остановлен
+    досрочно.
     """
     existing = set(existing_tender_nos)
     seen = set()
     new_ones = []
-    stats = {"scanned": 0, "pages": 0, "skipped_supervision": 0, "stopped_early": False}
+    stats = {"scanned": 0, "pages": 0, "stopped_early": False}
     known_pages_in_row = 0
 
     for page in range(max_pages):
@@ -211,9 +205,6 @@ def find_new_tenders(existing_tender_nos, *, portal_status=STATUS_COMPLETED,
             a = _parse_announcement(item)
             no = a["tender_no"]
             if not no or no in seen or no in existing:
-                continue
-            if is_technical_supervision(a["title"]):
-                stats["skipped_supervision"] += 1
                 continue
             seen.add(no)
             new_ones.append(a)

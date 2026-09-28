@@ -207,6 +207,13 @@ def list_tenders(session):
     return session.execute(select(Tender).order_by(Tender.loaded_at.desc())).scalars().all()
 
 
+def list_tender_numbers(session) -> set:
+    """Только номера конкурсов — для сверки "что уже есть в базе" на
+    страницах парсинга. Отдельно от list_tenders, чтобы не тянуть из Neon
+    полные объекты всех тендеров ради одного строкового поля."""
+    return set(session.execute(select(Tender.tender_no)).scalars().all())
+
+
 def get_tender_dict(session, tender_no: str):
     """Возвращает тендер в формате, ожидаемом ui_components.render_tender_editor."""
     tender = _get_tender_full(session, tender_no)
