@@ -4,7 +4,7 @@ import pandas as pd
 import streamlit as st
 
 import crud
-from common import get_session
+from common import current_username, get_session
 from parser import parse_tender_pdf
 from ui_components import DEFAULT_LOT_CATEGORIES, render_tender_editor
 
@@ -211,7 +211,7 @@ if st.button("💾 Сохранить отмеченные в базу", type="p
                 session,
                 data,
                 source="pdf_upload",
-                username=st.session_state["username"],
+                username=current_username(),
                 source_file=it["file_name"],
                 file_hash=it["file_hash"],
                 overwrite=True,

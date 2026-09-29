@@ -1,7 +1,7 @@
 import streamlit as st
 
 import crud
-from common import get_session
+from common import current_username, get_session
 
 st.title("🗺️ Региональность")
 st.caption(
@@ -138,7 +138,7 @@ with col_left:
                 try:
                     crud.save_supplier_region(
                         session, selected_bin, int(num_val), name_val,
-                        username=st.session_state["username"],
+                        username=current_username(),
                     )
                     st.session_state.pop("_region_catalog", None)
                     # Сбрасываем выбор, чтобы список открылся на следующем
@@ -183,7 +183,7 @@ with col_right:
                 try:
                     crud.save_customer_region(
                         session, selected_customer_id, int(num_val_c), name_val_c,
-                        username=st.session_state["username"],
+                        username=current_username(),
                     )
                     st.session_state.pop("_region_catalog", None)
                     st.session_state.pop("region_customer_select", None)

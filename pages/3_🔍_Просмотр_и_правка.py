@@ -1,7 +1,7 @@
 import streamlit as st
 
 import crud
-from common import get_session
+from common import current_username, get_session
 from ui_components import render_tender_editor
 
 st.title("🔍 Просмотр и правка сохранённых протоколов")
@@ -77,7 +77,7 @@ with col_save:
                 session,
                 edited,
                 source="manual_edit",
-                username=st.session_state["username"],
+                username=current_username(),
                 overwrite=True,
                 old_tender_no=tender_no,
             )
@@ -112,7 +112,7 @@ with col_delete:
             use_container_width=True,
         ):
             try:
-                crud.delete_tender(session, tender_no, username=st.session_state["username"])
+                crud.delete_tender(session, tender_no, username=current_username())
                 st.success(f"Протокол №{tender_no} полностью удалён из базы данных.")
                 st.query_params.pop("tender", None)
                 st.session_state.pop("_edit_data", None)

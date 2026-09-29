@@ -123,6 +123,22 @@ def check_auth():
             st.session_state["authenticated"] = True
             st.session_state["username"] = user
 
+    # Полупустая сессия: признак входа есть, а имени пользователя нет.
+    # Так бывает, когда сессия пересоздаётся на лету (сервер перезапустился
+    # после деплоя, оборвался веб-сокет), и часть session_state не доезжает.
+    # Раньше следующая же строка падала с "st.session_state has no key
+    # username" — вместо страницы приложения или экрана входа пользователь
+    # видел техническую ошибку. Восстанавливаем имя из подписанной ссылки, а
+    # если и там его нет — честно просим войти заново.
+    if st.session_state.get("authenticated") and not st.session_state.get("username"):
+        qp = st.query_params
+        user = qp.get("auth_user")
+        token = qp.get("auth_token")
+        if user and token and _check_token(token, user):
+            st.session_state["username"] = user
+        else:
+            st.session_state["authenticated"] = False
+
     if st.session_state.get("authenticated"):
         # Не .clear() — иначе на каждом прогоне стирались бы любые другие
         # параметры, которые страницы кладут в URL сами (например,
@@ -171,6 +187,21 @@ def check_auth():
             st.error("❌ Неверный логин или пароль")
 
     st.stop()
+
+
+def current_username() -> str:
+    """Имя пользователя для журнала изменений — без падения на пустой сессии.
+
+    Страницы пишут его в audit_log, и терять из-за него уже разобранную
+    пачку протоколов нельзя: сохранение важнее, чем подпись под ним. Если
+    имени нет ни в сессии, ни в подписанной ссылке, подставляем логин из
+    настроек — вход в приложение один, так что это и есть тот, кто работает.
+    """
+    return (
+        st.session_state.get("username")
+        or st.query_params.get("auth_user")
+        or APP_USERNAME
+    )
 
 
 def do_logout():

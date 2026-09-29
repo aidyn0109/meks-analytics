@@ -2,7 +2,7 @@ import streamlit as st
 
 import ai_assistant
 import crud
-from common import get_session
+from common import current_username, get_session
 
 st.title("🤖 ИИ-ассистент")
 st.caption(
@@ -56,7 +56,7 @@ if st.button("🚀 Сгенерировать отчёт", type="primary"):
                 )
                 new_id = crud.save_ai_report(
                     session, selected_bin, profile["name"], selected_region, region_name,
-                    future_sum, report_text, username=st.session_state["username"],
+                    future_sum, report_text, username=current_username(),
                 )
                 st.session_state["_ai_selected_report_id"] = new_id
             except ai_assistant.DeepSeekNotConfigured as e:
