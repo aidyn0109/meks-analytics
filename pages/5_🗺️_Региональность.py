@@ -6,7 +6,9 @@ from common import get_session
 st.title("🗺️ Региональность")
 st.caption(
     "Привяжите номер и название региона к подрядчикам и заказчикам. "
-    "«✅» перед названием в списке — региональность уже заполнена."
+    "Те, у кого региона ещё нет, стоят в начале списка — новые компании из "
+    "свежих протоколов видно сразу, листать не нужно. «✅» перед названием "
+    "означает, что региональность уже заполнена."
 )
 
 session = get_session()
@@ -15,6 +17,20 @@ if "_region_catalog" not in st.session_state:
     st.session_state["_region_catalog"] = crud.list_region_catalog(session)
 
 catalog = st.session_state["_region_catalog"]
+
+
+def _without_region_first(rows):
+    """Сначала те, у кого регион ещё не проставлен, потом остальные —
+    внутри каждой группы по алфавиту.
+
+    Новые компании приезжают в базу вместе с каждой пачкой протоколов, и
+    искать их в общем алфавитном списке из сотен названий приходилось
+    перелистыванием до первой строки без «✅». Порядок здесь — не
+    косметика: это и есть рабочая очередь на заполнение."""
+    return sorted(
+        rows,
+        key=lambda r: (bool(r["region_number"]), (r["name"] or "").lower()),
+    )
 
 
 def _region_widgets(key_prefix):
@@ -96,6 +112,12 @@ with col_left:
     if not suppliers:
         st.info("В базе пока нет ни одного поставщика.")
     else:
+        suppliers = _without_region_first(suppliers)
+        pending = sum(1 for s in suppliers if not s["region_number"])
+        if pending:
+            st.caption(f"Без региона: {pending} из {len(suppliers)} — они в начале списка.")
+        else:
+            st.caption("Регион проставлен у всех подрядчиков.")
         options = {s["bin"]: s for s in suppliers}
         selected_bin = st.selectbox(
             "Выберите подрядчика",
@@ -119,6 +141,10 @@ with col_left:
                         username=st.session_state["username"],
                     )
                     st.session_state.pop("_region_catalog", None)
+                    # Сбрасываем выбор, чтобы список открылся на следующем
+                    # подрядчике без региона: только что сохранённый уедет
+                    # в конец списка, и оставлять курсор на нём незачем.
+                    st.session_state.pop("region_supplier_select", None)
                     st.success("Регион подрядчика сохранён.")
                     st.rerun()
                 except Exception as e:
@@ -131,6 +157,12 @@ with col_right:
     if not customers:
         st.info("В базе пока нет ни одного заказчика.")
     else:
+        customers = _without_region_first(customers)
+        pending_c = sum(1 for c in customers if not c["region_number"])
+        if pending_c:
+            st.caption(f"Без региона: {pending_c} из {len(customers)} — они в начале списка.")
+        else:
+            st.caption("Регион проставлен у всех заказчиков.")
         options_c = {c["id"]: c for c in customers}
         selected_customer_id = st.selectbox(
             "Выберите заказчика",
@@ -154,6 +186,7 @@ with col_right:
                         username=st.session_state["username"],
                     )
                     st.session_state.pop("_region_catalog", None)
+                    st.session_state.pop("region_customer_select", None)
                     st.success("Регион заказчика сохранён.")
                     st.rerun()
                 except Exception as e:
