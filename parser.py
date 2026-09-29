@@ -28,6 +28,29 @@ def clean(s):
     return re.sub(r"\s+", " ", str(s).replace("\n", " ")).strip()
 
 
+# Услуги технического надзора — отдельная категория закупок (надзор за
+# работами, а не сами работы). Такие конкурсы скачиваются и загружаются в
+# базу наравне с остальными, но помечаются признаком, чтобы в отчётах их
+# можно было отделить и не задваивать с работами, за которыми ведётся этот
+# надзор. Сравниваем по корням слов, а не по точным фразам — так ловятся
+# любые падежные формы ("технического надзора", "техническому надзору",
+# "техническим надзором"); "техник\w*\s+қадаға\w*" — казахский аналог.
+TECHNICAL_SUPERVISION_RE = re.compile(
+    r"техническ\w*\s+надзор\w*"
+    r"|надзор\w*\s+техническ\w*"
+    r"|техник\w*\s+қадаға\w*",
+    re.IGNORECASE,
+)
+
+
+def is_technical_supervision(text: str) -> bool:
+    """True, если текст говорит об услугах технического надзора (в любой
+    падежной форме, рус./каз.). Название конкурса выдаёт это не всегда —
+    перечень закупаемых работ в самом протоколе обычно называет услугу
+    прямо, поэтому проверять стоит и то, и другое (см. parse_tender_pdf)."""
+    return bool(TECHNICAL_SUPERVISION_RE.search(text or ""))
+
+
 def to_number(v):
     if v is None:
         return None
@@ -253,6 +276,325 @@ def _merge_paginated_tables(all_tables):
     return merged
 
 
+# ---------------------------------------------------------------------------
+# Шаблон "ПРОТОКОЛ ИТОГОВ № ... СПОСОБОМ ..." — с 2026 года основной на
+# портале. Отличается от двух предыдущих не только подписями полей, но и
+# составом данных: появились код ЕНС ТРУ и описание у позиции закупки,
+# организация и признак присутствия у членов комиссии, номер заявки, адрес,
+# показатель загрузки и итоговый балл у заявок. Документ двуязычный: первая
+# половина страниц — казахская, вторая — точная русская копия, поэтому
+# разбирается только русская половина (иначе каждая таблица удвоилась бы).
+# ---------------------------------------------------------------------------
+
+NEW_TEMPLATE_TITLE_RE = re.compile(r"ПРОТОКОЛ\s+ИТОГОВ\s*№", re.IGNORECASE)
+
+
+def _is_new_template(full_text: str) -> bool:
+    if _is_alt_template(full_text):
+        # Явный заголовок предыдущего шаблона важнее: он ни при каких
+        # условиях не должен уехать в разбор нового.
+        return False
+    return bool(NEW_TEMPLATE_TITLE_RE.search(full_text or "")) and "СПОСОБОМ" in (full_text or "")
+
+
+def _russian_half_start(pages_text) -> int:
+    """Номер первой страницы русской половины документа.
+
+    Казахская половина озаглавлена "ҚОРЫТЫНДЫ ХАТТАМАСЫ", русская —
+    "ПРОТОКОЛ ИТОГОВ", с неё и начинается копия. Ориентироваться на
+    середину документа нельзя: половины не всегда одинаковой длины."""
+    for i, text in enumerate(pages_text):
+        if NEW_TEMPLATE_TITLE_RE.search(text or ""):
+            return i
+    return 0
+
+
+def _parse_header_new(text: str, data: dict):
+    """Шапка нового шаблона — она целиком на первой странице русской половины."""
+    m = re.search(r"ПРОТОКОЛ\s+ИТОГОВ\s*№\s*(\S+)", text)
+    if m:
+        data["tender_no"] = m.group(1).strip()
+
+    # Способ закупки и название конкурса идут двумя блоками подряд:
+    # "СПОСОБОМ ДВУХЭТАПНЫЙ КОНКУРС" / "<название>" / "Дата и время публикации:".
+    m = re.search(r"СПОСОБОМ\s+(.+?)\n(.+?)\n\s*Дата и время публикации", text, re.DOTALL)
+    if m:
+        data["procurement_method"] = clean(m.group(1))
+        data["title"] = clean(m.group(2))
+    else:
+        m = re.search(r"СПОСОБОМ\s+(.+)", text)
+        if m:
+            data["procurement_method"] = clean(m.group(1))
+
+    m = re.search(r"Дата и время публикации:\s*(\d{2}\.\d{2}\.\d{4})\s+(\d{2}:\d{2})", text)
+    if m:
+        data["protocol_date"] = m.group(1)
+        data["protocol_time"] = m.group(2)
+
+    m = re.search(r"Дата начала приема заявок:\s*(\d{2}\.\d{2}\.\d{4}(?:\s+\d{2}:\d{2})?)", text)
+    if m:
+        data["applications_start_at"] = clean(m.group(1))
+
+    m = re.search(r"Дата окончания приема заявок:\s*(\d{2}\.\d{2}\.\d{4}(?:\s+\d{2}:\d{2})?)", text)
+    if m:
+        data["applications_end_at"] = clean(m.group(1))
+
+    m = re.search(r"Заказчик закупок:\s*(.+?)(?=\n\s*(?:Сведения|Перечень)|$)", text, re.DOTALL)
+    if m:
+        data["customer_name"] = clean(m.group(1))
+
+
+QUOTES_RE = re.compile("[«»“”„\"'`]")
+DASHES_RE = re.compile("[–—−-]")
+
+
+def _norm_name(name) -> str:
+    """Ключ для сопоставления поставщика между таблицами протокола.
+
+    В новом шаблоне БИН печатается только в таблице допущенных заявок, а во
+    всех остальных поставщик назван по имени — сопоставлять их приходится по
+    названию. Кавычки и тире портал печатает по-разному в разных таблицах,
+    поэтому из ключа они убираются."""
+    n = clean(name).lower()
+    n = QUOTES_RE.sub("", n)
+    n = DASHES_RE.sub("-", n)
+    return re.sub(r"\s+", " ", n).strip()
+
+
+def _bid_by_name(data, name, create=True):
+    key = _norm_name(name)
+    if not key:
+        return None
+    for b in data["bids"]:
+        if _norm_name(b.get("name")) == key:
+            return b
+    if not create:
+        return None
+    bid = {
+        "bin": "",
+        "name": clean(name),
+        "status": None,
+        "submitted_at": "",
+        "offered_price": None,
+        "is_winner": False,
+        "is_second_place": False,
+        "rejection_reason": "",
+        "application_no": "",
+        "supplier_address": "",
+        "load_factor": None,
+        "total_score": None,
+        "criteria": [],
+    }
+    data["bids"].append(bid)
+    return bid
+
+
+def _classify_new_table(header_join: str):
+    """Вид таблицы нового шаблона по её заголовку.
+
+    Возвращает None, если строка не похожа ни на один известный заголовок —
+    для таблицы это значит, что она продолжает предыдущую (портал разрывает
+    длинные таблицы между страницами, не повторяя заголовок)."""
+    if "Фамилия, Имя Отчество" in header_join:
+        return "commission"
+    if "Код ЕНС ТРУ" in header_join:
+        return "lots"
+    if "Итоги рассмотрения" in header_join:
+        return "bids"
+    if "Требование/критерий" in header_join:
+        return "rejections"
+    if "Критерии оценки" in header_join and "Баллы" in header_join:
+        return "criteria"
+    if "ИТОГИ" in header_join and "Сумма ценового предложения" in header_join:
+        return "results"
+    if "БИН" in header_join and "Показатель загрузки" in header_join:
+        return "admitted"
+    if "которому направлен запрос" in header_join:
+        return "requests"
+    return None
+
+
+def _cell(row, i):
+    return clean(row[i]) if len(row) > i else ""
+
+
+def _parse_new_template(pages_text, pages_tables, data: dict):
+    start = _russian_half_start(pages_text)
+    ru_text = "\n".join(pages_text[start:])
+
+    _parse_header_new(pages_text[start], data)
+    _parse_failed_status(ru_text, data)
+
+    last_kind = None
+    last_rejected = None      # поставщик, чью причину отклонения дописываем
+    current_scored = None     # поставщик, к чьей балльной оценке относится таблица
+
+    for page_no in range(start, len(pages_text)):
+        # "Результаты применения балльной оценки" печатаются секцией на
+        # поставщика: строка с БИН и названием, а следом — его таблица
+        # критериев (возможно, с переносом на следующую страницу).
+        m = re.search(r"Потенциальный поставщик:\s*(\d{9,14})\s*,\s*(.+)", pages_text[page_no])
+        if m:
+            bid = _bid_by_name(data, m.group(2))
+            if bid is not None:
+                bid["bin"] = m.group(1)
+                current_scored = bid
+
+        for table in pages_tables[page_no]:
+            if not table or not table[0]:
+                continue
+            header_join = " ".join(clean(h) for h in table[0])
+            kind = _classify_new_table(header_join)
+            if kind is None:
+                # продолжение предыдущей таблицы — заголовка у неё нет,
+                # поэтому строки разбираются те же, начиная с первой
+                kind, rows = last_kind, table
+            else:
+                rows = table[1:]
+            last_kind = kind
+
+            if kind == "commission":
+                for row in rows:
+                    if not _cell(row, 1):
+                        continue
+                    present = _cell(row, 4).lower()
+                    data["commission_members"].append(
+                        {
+                            "full_name": _cell(row, 1),
+                            # Должности в этом шаблоне нет — вместо неё
+                            # печатается организация, подменять одно другим
+                            # нельзя (в отчётах это разные поля).
+                            "position": "",
+                            "role": _cell(row, 2),
+                            "organization": _cell(row, 3),
+                            "is_present": True if present.startswith("да")
+                            else (False if present.startswith("нет") else None),
+                            "absence_reason": _cell(row, 5),
+                        }
+                    )
+
+            elif kind == "lots":
+                for row in rows:
+                    if not _cell(row, 1):
+                        continue
+                    data["lots"].append(
+                        {
+                            "name": _cell(row, 1),
+                            "enstru_code": _cell(row, 0),
+                            "description": _cell(row, 2),
+                            "quantity": None,
+                            "unit_price": None,
+                            "allocated_amount": to_number(_cell(row, 3)),
+                        }
+                    )
+
+            elif kind == "bids":
+                for row in rows:
+                    if not _cell(row, 2):
+                        continue
+                    bid = _bid_by_name(data, _cell(row, 2))
+                    if bid is None:
+                        continue
+                    bid["application_no"] = _cell(row, 1)
+                    bid["supplier_address"] = _cell(row, 3)
+                    bid["load_factor"] = to_number(_cell(row, 4))
+                    bid["offered_price"] = to_number(_cell(row, 5))
+                    bid["submitted_at"] = _cell(row, 6)
+                    status = _cell(row, 7)
+                    if status:
+                        bid["status"] = "Отклонён" if status.lower().startswith("откл") else "Допущен"
+
+            elif kind == "admitted":
+                for row in rows:
+                    if not _cell(row, 1):
+                        continue
+                    bid = _bid_by_name(data, _cell(row, 1))
+                    if bid is None:
+                        continue
+                    if _cell(row, 2):
+                        bid["bin"] = _cell(row, 2)
+                    if _cell(row, 3):
+                        bid["submitted_at"] = _cell(row, 3)
+                    if bid.get("load_factor") is None:
+                        bid["load_factor"] = to_number(_cell(row, 4))
+                    if bid.get("status") is None:
+                        bid["status"] = "Допущен"
+
+            elif kind == "rejections":
+                for row in rows:
+                    name = _cell(row, 1)
+                    reason = _cell(row, 3)
+                    if name:
+                        bid = _bid_by_name(data, name)
+                        if bid is None:
+                            continue
+                        bid["status"] = "Отклонён"
+                        last_rejected = bid
+                    elif last_rejected is not None:
+                        # разрыв высокой ячейки между страницами — причина
+                        # продолжается без повторения названия поставщика
+                        bid = last_rejected
+                    else:
+                        continue
+                    if reason:
+                        bid["rejection_reason"] = (
+                            (bid.get("rejection_reason") or "") + " " + reason
+                        ).strip()
+
+            elif kind == "criteria":
+                if current_scored is None:
+                    continue
+                for row in rows:
+                    name = _cell(row, 0)
+                    if not name:
+                        continue
+                    if name.upper().startswith("ОБЩИЙ БАЛЛ"):
+                        current_scored["total_score"] = (
+                            to_number(_cell(row, 2)) or to_number(_cell(row, 1))
+                        )
+                        continue
+                    current_scored["criteria"].append(
+                        {
+                            "name": name,
+                            "value": _cell(row, 1) or None,
+                            "score": to_number(_cell(row, 2)),
+                        }
+                    )
+
+            elif kind == "results":
+                for row in rows:
+                    name = _cell(row, 2)
+                    if not name:
+                        continue
+                    bid = _bid_by_name(data, name)
+                    if bid is None:
+                        continue
+                    outcome = _cell(row, 1).lower()
+                    if "второе место" in outcome:
+                        bid["is_second_place"] = True
+                    else:
+                        bid["is_winner"] = True
+                        if bid.get("status") is None:
+                            bid["status"] = "Допущен"
+                    if bid.get("offered_price") is None:
+                        bid["offered_price"] = to_number(_cell(row, 3))
+
+    for b in data["bids"]:
+        if b.get("status") is None:
+            b["status"] = "Допущен"
+
+
+def _set_technical_supervision(data: dict):
+    """Технадзор определяем и по названию конкурса, и по перечню закупаемых
+    работ: название бывает нейтральным, а перечень работ называет услугу
+    прямо (проверено на живом примере — конкурс с обычным названием, у
+    которого в перечне стоит "Услуги по осуществлению технического
+    надзора")."""
+    data["is_technical_supervision"] = is_technical_supervision(data["title"]) or any(
+        is_technical_supervision(lot.get("name")) for lot in data["lots"]
+    )
+
+
 def parse_tender_pdf(file_bytes: bytes) -> dict:
     data = {
         "tender_no": "",
@@ -263,6 +605,10 @@ def parse_tender_pdf(file_bytes: bytes) -> dict:
         "protocol_time": "",
         "is_failed": False,
         "failed_reason": "",
+        "is_technical_supervision": False,
+        "procurement_method": "",
+        "applications_start_at": "",
+        "applications_end_at": "",
         "lots": [],
         "commission_members": [],
         "bids": [],
@@ -272,11 +618,23 @@ def parse_tender_pdf(file_bytes: bytes) -> dict:
         file_bytes = io.BytesIO(file_bytes)
 
     with pdfplumber.open(file_bytes) as pdf:
-        full_text = "\n".join(p.extract_text() or "" for p in pdf.pages)
-        all_tables = []
-        for page in pdf.pages:
-            all_tables.extend(page.extract_tables())
-        all_tables = _merge_paginated_tables(all_tables)
+        # Постранично, а не одним куском: в новом шаблоне таблица критериев
+        # привязана к поставщику строкой текста над ней, и без привязки к
+        # странице эту связь восстановить нельзя.
+        pages_text = [p.extract_text() or "" for p in pdf.pages]
+        pages_tables = [p.extract_tables() for p in pdf.pages]
+
+    full_text = "\n".join(pages_text)
+
+    if _is_new_template(full_text):
+        _parse_new_template(pages_text, pages_tables, data)
+        _set_technical_supervision(data)
+        return data
+
+    all_tables = []
+    for tables in pages_tables:
+        all_tables.extend(tables)
+    all_tables = _merge_paginated_tables(all_tables)
 
     _parse_header(full_text, data)
     _parse_failed_status(full_text, data)
@@ -446,5 +804,7 @@ def parse_tender_pdf(file_bytes: bytes) -> dict:
     for b in data["bids"]:
         if b.get("status") is None:
             b["status"] = "Допущен"
+
+    _set_technical_supervision(data)
 
     return data

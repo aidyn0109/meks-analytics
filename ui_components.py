@@ -9,55 +9,94 @@ from datetime import date, time, datetime
 import pandas as pd
 import streamlit as st
 
-DEFAULT_LOT_CATEGORIES = ["Водоотведение", "Водоснабжение", "Теплоснабжение", "Электроснабжение"]
+DEFAULT_LOT_CATEGORIES = [
+    "Водоотведение",
+    "Водоснабжение",
+    "Теплоснабжение",
+    "Электроснабжение",
+    "Приборизация/цифровизация",
+]
+
+
+def _as_numeric(df, columns):
+    """Приводит числовые колонки к float.
+
+    Колонка, в которой у всех строк пусто, иначе получает тип object, и
+    st.data_editor отказывается показывать её как числовую. Пустых колонок
+    здесь хватает: состав полей у позиции закупки и у заявки зависит от
+    шаблона протокола."""
+    for c in columns:
+        df[c] = pd.to_numeric(df[c], errors="coerce")
+    return df
+
+
+LOT_COLUMNS = ["name", "category", "enstru_code", "description",
+               "quantity", "unit_price", "allocated_amount"]
 
 
 def _lots_df(lots):
-    if not lots:
-        lots = [{"name": "", "category": "", "quantity": None, "unit_price": None, "allocated_amount": None}]
-    # Нормализуем: гарантируем наличие ключа "category" в каждой строке
-    normalized = []
-    for lot in lots:
-        normalized.append({
-            "name": lot.get("name", ""),
-            "category": lot.get("category", ""),
-            "quantity": lot.get("quantity"),
-            "unit_price": lot.get("unit_price"),
-            "allocated_amount": lot.get("allocated_amount"),
-        })
-    return pd.DataFrame(normalized)[["name", "category", "quantity", "unit_price", "allocated_amount"]]
+    # Нормализуем: гарантируем наличие всех колонок в каждой строке. Состав
+    # полей у позиции закупки зависит от шаблона протокола (код ЕНС ТРУ и
+    # описание есть только в новом, количество и цена за единицу — только в
+    # старых), поэтому часть колонок у конкретного протокола всегда пустая.
+    normalized = [
+        {c: lot.get(c, "" if c in ("name", "category", "enstru_code", "description") else None)
+         for c in LOT_COLUMNS}
+        for lot in (lots or [{}])
+    ]
+    return _as_numeric(
+        pd.DataFrame(normalized)[LOT_COLUMNS],
+        ["quantity", "unit_price", "allocated_amount"],
+    )
+
+
+COMMISSION_COLUMNS = ["full_name", "position", "role", "organization",
+                      "is_present", "absence_reason"]
 
 
 def _commission_df(members):
-    if not members:
-        members = [{"full_name": "", "position": "", "role": ""}]
-    return pd.DataFrame(members)[["full_name", "position", "role"]]
+    normalized = [
+        {
+            "full_name": m.get("full_name", "") or "",
+            "position": m.get("position", "") or "",
+            "role": m.get("role", "") or "",
+            "organization": m.get("organization", "") or "",
+            # Признак присутствия трёхзначный: в старых шаблонах его нет
+            # вовсе (None), и превращать это в "не присутствовал" нельзя.
+            "is_present": m.get("is_present"),
+            "absence_reason": m.get("absence_reason", "") or "",
+        }
+        for m in (members or [{}])
+    ]
+    df = pd.DataFrame(normalized)[COMMISSION_COLUMNS]
+    # Без явного nullable-boolean колонка из одних None получает тип object,
+    # и st.data_editor отказывается рисовать её галочками.
+    df["is_present"] = df["is_present"].astype("boolean")
+    return df
 
 
 def _bids_df(bids):
     rows = []
-    for b in bids or []:
+    for b in bids or [{}]:
         rows.append(
             {
-                "name": b.get("name", ""),
-                "bin": b.get("bin", ""),
+                "name": b.get("name", "") or "",
+                "bin": b.get("bin", "") or "",
+                "application_no": b.get("application_no", "") or "",
                 "status": b.get("status") or "Допущен",
-                "submitted_at": b.get("submitted_at", ""),
+                "submitted_at": b.get("submitted_at", "") or "",
+                "supplier_address": b.get("supplier_address", "") or "",
                 "offered_price": b.get("offered_price"),
+                "load_factor": b.get("load_factor"),
+                "total_score": b.get("total_score"),
                 "is_winner": bool(b.get("is_winner")),
                 "is_second_place": bool(b.get("is_second_place")),
                 "rejection_reason": b.get("rejection_reason") or "",
             }
         )
-    if not rows:
-        rows = [
-            {
-                "name": "", "bin": "", "status": "Допущен", "submitted_at": "",
-                "offered_price": None, "is_winner": False, "is_second_place": False,
-                "rejection_reason": "",
-            }
-        ]
-    return pd.DataFrame(rows)
+    return _as_numeric(
+        pd.DataFrame(rows), ["offered_price", "load_factor", "total_score"]
+    )
 
 
 def _parse_date_from_widget(val):
@@ -78,7 +117,8 @@ def _parse_time_from_widget(val):
     return str(val)
 
 
-def render_tender_editor(data: dict, key_prefix: str, category_options=None) -> dict:
+def render_tender_editor(data: dict, key_prefix: str, category_options=None,
+                          show_flags: bool = True) -> dict:
     """
     Рисует редактируемую форму тендера, инициализированную значениями из
     data (результат parser.parse_tender_pdf, crud.get_tender_dict, либо
@@ -89,6 +129,12 @@ def render_tender_editor(data: dict, key_prefix: str, category_options=None) -> 
     category_options: категории работ, уже встречавшиеся в базе (см.
     crud.list_lot_categories) — добавляются к стандартному списку
     DEFAULT_LOT_CATEGORIES для выпадающего списка "Категория работ".
+
+    show_flags=False скрывает галочки "конкурс не состоялся" и "технадзор".
+    Нужно при массовой загрузке: там этими признаками управляет сводная
+    таблица по всей пачке, и вторая пара тех же галочек здесь означала бы
+    два источника правды для одного значения. Значения из data при этом
+    сохраняются и возвращаются как есть.
     """
 
     st.subheader("Основные данные тендера")
@@ -140,16 +186,53 @@ def render_tender_editor(data: dict, key_prefix: str, category_options=None) -> 
             step=60,
         )
 
-    is_failed = st.checkbox(
-        "Конкурс не состоялся",
-        value=bool(data.get("is_failed")),
-        key=f"{key_prefix}_is_failed",
-        help=(
-            "Проставляется автоматически, если в протоколе есть фраза "
-            "«Признать закупку … несостоявшейся» — снимите или поставьте вручную, "
-            "если нужно."
-        ),
-    )
+    col3, col4, col5 = st.columns(3)
+    with col3:
+        procurement_method = st.text_input(
+            "Способ закупки",
+            value=data.get("procurement_method") or "",
+            key=f"{key_prefix}_procurement_method",
+            help="Есть только в протоколах нового образца («СПОСОБОМ ДВУХЭТАПНЫЙ КОНКУРС»).",
+        )
+    with col4:
+        applications_start_at = st.text_input(
+            "Начало приёма заявок (ДД.ММ.ГГГГ ЧЧ:ММ)",
+            value=data.get("applications_start_at") or "",
+            key=f"{key_prefix}_app_start",
+        )
+    with col5:
+        applications_end_at = st.text_input(
+            "Окончание приёма заявок (ДД.ММ.ГГГГ ЧЧ:ММ)",
+            value=data.get("applications_end_at") or "",
+            key=f"{key_prefix}_app_end",
+        )
+
+    is_failed = bool(data.get("is_failed"))
+    is_tech_supervision = bool(data.get("is_technical_supervision"))
+    if show_flags:
+        col_flag1, col_flag2 = st.columns(2)
+        with col_flag1:
+            is_failed = st.checkbox(
+                "Конкурс не состоялся",
+                value=is_failed,
+                key=f"{key_prefix}_is_failed",
+                help=(
+                    "Проставляется автоматически, если в протоколе есть фраза "
+                    "«Признать закупку … несостоявшейся» — снимите или поставьте "
+                    "вручную, если нужно."
+                ),
+            )
+        with col_flag2:
+            is_tech_supervision = st.checkbox(
+                "Услуги технического надзора",
+                value=is_tech_supervision,
+                key=f"{key_prefix}_is_tech_supervision",
+                help=(
+                    "Проставляется автоматически по названию конкурса и перечню "
+                    "закупаемых работ. Нужен, чтобы в отчётах отделять надзор от "
+                    "самих работ и не задваивать их."
+                ),
+            )
 
     st.subheader("Позиции закупки (лоты)")
 
@@ -194,6 +277,8 @@ def render_tender_editor(data: dict, key_prefix: str, category_options=None) -> 
             "category": st.column_config.SelectboxColumn(
                 "Категория работ", options=st.session_state[category_state_key]
             ),
+            "enstru_code": "Код ЕНС ТРУ",
+            "description": "Краткая характеристика работ",
             "quantity": st.column_config.NumberColumn("Количество"),
             "unit_price": st.column_config.NumberColumn("Цена за ед., тенге"),
             "allocated_amount": st.column_config.NumberColumn("Сумма для закупки, тенге"),
@@ -210,13 +295,18 @@ def render_tender_editor(data: dict, key_prefix: str, category_options=None) -> 
             "full_name": "Ф.И.О.",
             "position": "Должность",
             "role": "Роль в комиссии",
+            "organization": "Организация",
+            "is_present": st.column_config.CheckboxColumn("Присутствовал"),
+            "absence_reason": "Причина отсутствия",
         },
     )
 
     st.subheader("Заявки поставщиков")
     st.caption(
-        "Отметьте статус, победителя и второе место. БИН обязателен для каждой заявки — "
-        "по нему ниже сопоставляются критерии оценки."
+        "Отметьте статус, победителя и второе место. Критерии оценки ниже сопоставляются "
+        "по БИН, поэтому у заявки с баллами он должен быть заполнен. В протоколах нового "
+        "образца БИН печатается только у допущенных поставщиков — у отклонённых его можно "
+        "оставить пустым, заявка всё равно сохранится."
     )
     bids_result = st.data_editor(
         _bids_df(data.get("bids")),
@@ -226,9 +316,13 @@ def render_tender_editor(data: dict, key_prefix: str, category_options=None) -> 
         column_config={
             "name": "Наименование поставщика",
             "bin": "БИН",
+            "application_no": "Номер заявки",
             "status": st.column_config.SelectboxColumn("Статус", options=["Допущен", "Отклонён"]),
             "submitted_at": "Дата подачи (ДД.ММ.ГГГГ ЧЧ:ММ)",
+            "supplier_address": "Почтовый адрес",
             "offered_price": st.column_config.NumberColumn("Цена, тенге (если публикуется)"),
+            "load_factor": st.column_config.NumberColumn("Показатель загрузки"),
+            "total_score": st.column_config.NumberColumn("Общий балл"),
             "is_winner": st.column_config.CheckboxColumn("Победитель"),
             "is_second_place": st.column_config.CheckboxColumn("2-е место"),
             "rejection_reason": "Причина отклонения",
@@ -250,7 +344,9 @@ def render_tender_editor(data: dict, key_prefix: str, category_options=None) -> 
             bin_ = (b.get("bin") or "").strip()
             if bin_:
                 crit_rows = b.get("criteria") or [{"name": "", "value": "", "score": None}]
-                crit_map[bin_] = pd.DataFrame(crit_rows)[["name", "value", "score"]]
+                crit_map[bin_] = _as_numeric(
+                    pd.DataFrame(crit_rows)[["name", "value", "score"]], ["score"]
+                )
         st.session_state[criteria_state_key] = crit_map
 
     crit_map = st.session_state[criteria_state_key]
@@ -283,7 +379,11 @@ def render_tender_editor(data: dict, key_prefix: str, category_options=None) -> 
         "customer_address": customer_address.strip(),
         "protocol_date": _parse_date_from_widget(protocol_date),
         "protocol_time": _parse_time_from_widget(protocol_time),
+        "procurement_method": procurement_method.strip(),
+        "applications_start_at": applications_start_at.strip(),
+        "applications_end_at": applications_end_at.strip(),
         "is_failed": bool(is_failed),
+        "is_technical_supervision": bool(is_tech_supervision),
         "lots": lots_result.to_dict("records"),
         "commission_members": commission_result.to_dict("records"),
         "bids": [],

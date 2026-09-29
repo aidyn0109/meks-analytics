@@ -32,6 +32,16 @@ class Tender(Base):
     # протокола: parser находит в нём фразу "Признать закупку …
     # несостоявшейся" (см. parser._parse_failed_status).
     is_failed = Column(Boolean, default=False, index=True)
+    # Закупка услуг технического надзора (надзор за работами, а не сами
+    # работы). Такие конкурсы хранятся наравне с остальными, но помечаются,
+    # чтобы в отчётах их можно было отделить и не задваивать с работами, за
+    # которыми ведётся надзор. Проставляется автоматически при разборе
+    # протокола (parser.is_technical_supervision).
+    is_technical_supervision = Column(Boolean, default=False, index=True)
+    # Поля нового шаблона протокола ("ПРОТОКОЛ ИТОГОВ ... СПОСОБОМ")
+    procurement_method = Column(Text)                       # напр. "ДВУХЭТАПНЫЙ КОНКУРС"
+    applications_start_at = Column(DateTime)                # начало приёма заявок
+    applications_end_at = Column(DateTime)                  # окончание приёма заявок
     source_file = Column(Text)                              # имя загруженного PDF
     file_hash = Column(String)                               # sha256 файла (информационно)
     loaded_at = Column(DateTime(timezone=True), server_default=func.now())
@@ -70,6 +80,12 @@ class Lot(Base):
     tender_no = Column(String, ForeignKey("tenders.tender_no", ondelete="CASCADE"), nullable=False, index=True)
     name = Column(Text)
     category = Column(Text)
+    # Код и описание из шаблона "ПРОТОКОЛ ИТОГОВ ... СПОСОБОМ" — в более
+    # раннем шаблоне этих колонок нет, а количества и цены за единицу нет,
+    # наоборот, в новом. Поэтому часть полей у лота всегда пустая, в
+    # зависимости от того, по какому шаблону составлен протокол.
+    enstru_code = Column(Text)              # код ЕНС ТРУ, напр. 432212.110.000007
+    description = Column(Text)              # краткая характеристика работ
     quantity = Column(Numeric)
     unit_price = Column(Numeric)
     allocated_amount = Column(Numeric)
@@ -84,8 +100,12 @@ class CommissionMember(Base):
     id = Column(Integer, primary_key=True)
     tender_no = Column(String, ForeignKey("tenders.tender_no", ondelete="CASCADE"), nullable=False, index=True)
     full_name = Column(Text)
-    position = Column(Text)
+    position = Column(Text)                 # в новом шаблоне её нет (есть организация)
     role = Column(Text)
+    # Поля нового шаблона протокола
+    organization = Column(Text)
+    is_present = Column(Boolean)            # признак присутствия на рассмотрении
+    absence_reason = Column(Text)
 
     tender = relationship("Tender", back_populates="commission_members")
 
@@ -110,14 +130,24 @@ class Bid(Base):
 
     id = Column(Integer, primary_key=True)
     tender_no = Column(String, ForeignKey("tenders.tender_no", ondelete="CASCADE"), nullable=False, index=True)
-    supplier_bin = Column(String, ForeignKey("suppliers.bin"), nullable=False, index=True)
+    # БИН может отсутствовать: в новом шаблоне протокола он указан только у
+    # допущенных поставщиков, а у отклонённых его нет нигде в документе.
+    # Такие заявки всё равно сохраняются (иначе терялось бы число участников
+    # конкурса) — поставщик в них опознаётся по supplier_name_raw.
+    supplier_bin = Column(String, ForeignKey("suppliers.bin"), index=True)
+    supplier_name_raw = Column(Text)       # название поставщика как в ЭТОМ протоколе
 
     submitted_at = Column(DateTime)
     status = Column(String)                # "Допущен" / "Отклонён"
     rejection_reason = Column(Text)
     is_winner = Column(Boolean, default=False)
     is_second_place = Column(Boolean, default=False)
-    offered_price = Column(Numeric)        # факт: в протоколе почти всегда пусто (публикуется только балл)
+    offered_price = Column(Numeric)        # в раннем шаблоне почти всегда пусто, в новом — есть у всех
+    # Поля нового шаблона протокола
+    application_no = Column(String)        # номер заявки потенциального поставщика
+    supplier_address = Column(Text)        # почтовый адрес, как указан в протоколе
+    load_factor = Column(Numeric)          # показатель загрузки поставщика
+    total_score = Column(Numeric)          # итоговый балл ("ОБЩИЙ БАЛЛ")
 
     tender = relationship("Tender", back_populates="bids")
     supplier = relationship("Supplier", back_populates="bids")

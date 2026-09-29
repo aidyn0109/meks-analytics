@@ -93,16 +93,44 @@ def _parse_datetime_combo(date_str, time_str=None):
 
 
 def _parse_datetime_str(s):
-    """Парсит одну строку вида '24.06.2026 12:18' или '24.06.2026'."""
+    """Парсит одну строку вида '24.06.2026 12:18' или '24.06.2026'.
+
+    Понимает и ISO-формат: в снимки журнала даты кладутся через _ser(), и
+    без этого значение, прочитанное из журнала или из снимка, не читалось
+    бы обратно и молча терялось при сохранении."""
     if not s:
         return None
+    if isinstance(s, datetime):
+        return s
     s = str(s).strip()
-    for fmt in ("%d.%m.%Y %H:%M", "%d.%m.%Y"):
+    for fmt in ("%d.%m.%Y %H:%M", "%d.%m.%Y", "%Y-%m-%dT%H:%M:%S", "%Y-%m-%d %H:%M:%S", "%Y-%m-%d"):
         try:
             return datetime.strptime(s, fmt)
         except ValueError:
             continue
     return None
+
+
+def _to_bool_or_none(v):
+    """Трёхзначный признак из data_editor: True / False / «не заполнено».
+
+    Пустая ячейка галочки приходит как pandas.NA или NaN — в колонку Boolean
+    такое не запишется и в JSON журнала не сериализуется, поэтому приводим
+    его к None."""
+    if v is None:
+        return None
+    if isinstance(v, bool):
+        return v
+    if v is not v:  # NaN
+        return None
+    try:
+        import pandas as pd
+
+        if v is pd.NA:
+            return None
+    except Exception:
+        pass
+    return bool(v)
 
 
 def _ser(v):
@@ -227,10 +255,22 @@ def get_tender_dict(session, tender_no: str):
         "protocol_date": tender.protocol_date.strftime("%d.%m.%Y") if tender.protocol_date else "",
         "protocol_time": tender.protocol_datetime.strftime("%H:%M") if tender.protocol_datetime else "",
         "is_failed": bool(tender.is_failed),
+        "is_technical_supervision": bool(tender.is_technical_supervision),
+        "procurement_method": tender.procurement_method or "",
+        "applications_start_at": (
+            tender.applications_start_at.strftime("%d.%m.%Y %H:%M")
+            if tender.applications_start_at else ""
+        ),
+        "applications_end_at": (
+            tender.applications_end_at.strftime("%d.%m.%Y %H:%M")
+            if tender.applications_end_at else ""
+        ),
         "lots": [
             {
                 "name": l.name,
                 "category": l.category or "",
+                "enstru_code": l.enstru_code or "",
+                "description": l.description or "",
                 "quantity": l.quantity,
                 "unit_price": l.unit_price,
                 "allocated_amount": l.allocated_amount,
@@ -238,13 +278,19 @@ def get_tender_dict(session, tender_no: str):
             for l in tender.lots
         ],
         "commission_members": [
-            {"full_name": c.full_name, "position": c.position, "role": c.role}
+            {"full_name": c.full_name, "position": c.position, "role": c.role,
+             "organization": c.organization or "", "is_present": c.is_present,
+             "absence_reason": c.absence_reason or ""}
             for c in tender.commission_members
         ],
         "bids": [
             {
-                "name": b.supplier.name if b.supplier else "",
-                "bin": b.supplier_bin,
+                "name": (b.supplier.name if b.supplier else None) or b.supplier_name_raw or "",
+                "bin": b.supplier_bin or "",
+                "application_no": b.application_no or "",
+                "supplier_address": b.supplier_address or "",
+                "load_factor": b.load_factor,
+                "total_score": b.total_score,
                 "status": b.status,
                 "submitted_at": b.submitted_at.strftime("%d.%m.%Y %H:%M") if b.submitted_at else "",
                 "offered_price": b.offered_price,
@@ -271,13 +317,21 @@ def tender_snapshot(tender: Tender) -> dict:
         "protocol_date": _ser(tender.protocol_date),
         "protocol_datetime": _ser(tender.protocol_datetime),
         "is_failed": bool(tender.is_failed),
+        "is_technical_supervision": bool(tender.is_technical_supervision),
+        "procurement_method": tender.procurement_method or "",
+        "applications_start_at": _ser(tender.applications_start_at),
+        "applications_end_at": _ser(tender.applications_end_at),
         "lots": [
-            {"name": l.name, "category": l.category, "quantity": _ser(l.quantity),
+            {"name": l.name, "category": l.category,
+             "enstru_code": l.enstru_code or "", "description": l.description or "",
+             "quantity": _ser(l.quantity),
              "unit_price": _ser(l.unit_price), "allocated_amount": _ser(l.allocated_amount)}
             for l in tender.lots
         ],
         "commission_members": [
-            {"full_name": c.full_name, "position": c.position, "role": c.role}
+            {"full_name": c.full_name, "position": c.position, "role": c.role,
+             "organization": c.organization or "", "is_present": c.is_present,
+             "absence_reason": c.absence_reason or ""}
             for c in tender.commission_members
         ],
         "bids": [
@@ -285,6 +339,10 @@ def tender_snapshot(tender: Tender) -> dict:
                 "bin": b.supplier_bin, "status": b.status, "is_winner": b.is_winner,
                 "is_second_place": b.is_second_place, "offered_price": _ser(b.offered_price),
                 "rejection_reason": b.rejection_reason,
+                "application_no": b.application_no or "",
+                "supplier_address": b.supplier_address or "",
+                "load_factor": _ser(b.load_factor),
+                "total_score": _ser(b.total_score),
                 "criteria": [
                     {"name": c.criterion_name, "value": c.criterion_value, "score": _ser(c.criterion_score)}
                     for c in b.criteria
@@ -333,6 +391,47 @@ def log_change(session, table_name, record_id, action, old_data, new_data, usern
             source=source,
         )
     )
+
+
+def _resolve_missing_bins(session, bids_in):
+    """
+    Подставляет БИН заявкам, где его нет, по названию поставщика из
+    справочника suppliers.
+
+    Нужно для нового шаблона протокола: там БИН указан только у допущенных
+    поставщиков, а у отклонённых его нет нигде в документе. Но отклонённый
+    сегодня поставщик почти всегда уже встречался в других конкурсах —
+    проверено на живом протоколе: 4 названия из 5 нашлись в справочнике.
+    Сопоставление точное (после strip и без учёта регистра): рискованных
+    догадок по частичному совпадению тут лучше не делать — ошибиться БИНом
+    хуже, чем оставить заявку без него.
+    """
+    need = {
+        _s(b.get("name")).strip()
+        for b in bids_in
+        if not _s(b.get("bin")).strip() and _s(b.get("name")).strip()
+    }
+    if not need:
+        return bids_in
+
+    found = {}
+    for name in need:
+        supplier = session.execute(
+            select(Supplier).where(func.lower(func.trim(Supplier.name)) == name.lower())
+        ).scalars().first()
+        if supplier:
+            found[name] = supplier.bin
+
+    if not found:
+        return bids_in
+
+    resolved = []
+    for b in bids_in:
+        name = _s(b.get("name")).strip()
+        if not _s(b.get("bin")).strip() and name in found:
+            b = dict(b, bin=found[name])
+        resolved.append(b)
+    return resolved
 
 
 def save_tender(session, data: dict, source: str, username: str,
@@ -397,6 +496,10 @@ def save_tender(session, data: dict, source: str, username: str,
         existing.protocol_date = protocol_date_val
         existing.protocol_datetime = protocol_dt
         existing.is_failed = bool(data.get("is_failed"))
+        existing.is_technical_supervision = bool(data.get("is_technical_supervision"))
+        existing.procurement_method = _s(data.get("procurement_method")).strip() or None
+        existing.applications_start_at = _parse_datetime_str(data.get("applications_start_at"))
+        existing.applications_end_at = _parse_datetime_str(data.get("applications_end_at"))
         # Один DELETE на таблицу вместо построчного session.delete() в
         # цикле — не нужно тянуть уже загруженные строки заново, и это один
         # запрос вместо N. bid_criteria удалятся каскадно на уровне БД
@@ -417,6 +520,10 @@ def save_tender(session, data: dict, source: str, username: str,
             protocol_date=protocol_date_val,
             protocol_datetime=protocol_dt,
             is_failed=bool(data.get("is_failed")),
+            is_technical_supervision=bool(data.get("is_technical_supervision")),
+            procurement_method=_s(data.get("procurement_method")).strip() or None,
+            applications_start_at=_parse_datetime_str(data.get("applications_start_at")),
+            applications_end_at=_parse_datetime_str(data.get("applications_end_at")),
             source_file=source_file,
             file_hash=file_hash,
         )
@@ -431,6 +538,8 @@ def save_tender(session, data: dict, source: str, username: str,
                 tender_no=tender_no,
                 name=lot.get("name"),
                 category=(lot.get("category") or "").strip() or None,
+                enstru_code=_s(lot.get("enstru_code")).strip() or None,
+                description=_s(lot.get("description")).strip() or None,
                 quantity=_to_float(lot.get("quantity")),
                 unit_price=_to_float(lot.get("unit_price")),
                 allocated_amount=_to_float(lot.get("allocated_amount")),
@@ -446,14 +555,24 @@ def save_tender(session, data: dict, source: str, username: str,
                 full_name=cm.get("full_name"),
                 position=cm.get("position"),
                 role=cm.get("role"),
+                organization=_s(cm.get("organization")).strip() or None,
+                is_present=_to_bool_or_none(cm.get("is_present")),
+                absence_reason=_s(cm.get("absence_reason")).strip() or None,
             )
         )
 
-    bids_in = [b for b in data.get("bids", []) if _s(b.get("bin")).strip()]
+    # Заявка сохраняется и без БИН: в новом шаблоне протокола он указан
+    # только у допущенных поставщиков, и отбрасывание остальных потеряло бы
+    # число участников конкурса. Достаточно названия.
+    bids_in = [
+        b for b in data.get("bids", [])
+        if _s(b.get("bin")).strip() or _s(b.get("name")).strip()
+    ]
+    bids_in = _resolve_missing_bins(session, bids_in)
 
     # Поставщиков подтягиваем одним запросом на все БИН заявок сразу,
     # вместо SELECT-а на каждую заявку по отдельности.
-    bins = {_s(b.get("bin")).strip() for b in bids_in}
+    bins = {_s(b.get("bin")).strip() for b in bids_in if _s(b.get("bin")).strip()}
     suppliers_by_bin = {
         s.bin: s for s in session.execute(select(Supplier).where(Supplier.bin.in_(bins))).scalars()
     } if bins else {}
@@ -463,23 +582,29 @@ def save_tender(session, data: dict, source: str, username: str,
         bin_ = _s(b.get("bin")).strip()
         name_ = _s(b.get("name")).strip() or None
 
-        supplier = suppliers_by_bin.get(bin_)
-        if supplier is None:
-            supplier = Supplier(bin=bin_, name=name_)
-            session.add(supplier)
-            suppliers_by_bin[bin_] = supplier
-        elif name_:
-            supplier.name = name_
+        if bin_:
+            supplier = suppliers_by_bin.get(bin_)
+            if supplier is None:
+                supplier = Supplier(bin=bin_, name=name_)
+                session.add(supplier)
+                suppliers_by_bin[bin_] = supplier
+            elif name_:
+                supplier.name = name_
 
         bid = Bid(
             tender_no=tender_no,
-            supplier_bin=bin_,
+            supplier_bin=bin_ or None,
+            supplier_name_raw=name_,
             submitted_at=_parse_datetime_str(b.get("submitted_at")),
             status=_s(b.get("status")).strip() or None,
             rejection_reason=_s(b.get("rejection_reason")).strip() or None,
             is_winner=bool(b.get("is_winner")),
             is_second_place=bool(b.get("is_second_place")),
             offered_price=_to_float(b.get("offered_price")),
+            application_no=_s(b.get("application_no")).strip() or None,
+            supplier_address=_s(b.get("supplier_address")).strip() or None,
+            load_factor=_to_float(b.get("load_factor")),
+            total_score=_to_float(b.get("total_score")),
         )
         session.add(bid)
         pending_bids.append((bid, b.get("criteria") or []))
@@ -517,10 +642,16 @@ def save_tender(session, data: dict, source: str, username: str,
         "protocol_date": _ser(protocol_date_val),
         "protocol_datetime": _ser(protocol_dt),
         "is_failed": bool(data.get("is_failed")),
+        "is_technical_supervision": bool(data.get("is_technical_supervision")),
+        "procurement_method": _s(data.get("procurement_method")).strip() or None,
+        "applications_start_at": _ser(_parse_datetime_str(data.get("applications_start_at"))),
+        "applications_end_at": _ser(_parse_datetime_str(data.get("applications_end_at"))),
         "lots": [
             {
                 "name": lot.get("name"),
                 "category": (lot.get("category") or "").strip() or None,
+                "enstru_code": _s(lot.get("enstru_code")).strip() or "",
+                "description": _s(lot.get("description")).strip() or "",
                 "quantity": _to_float(lot.get("quantity")),
                 "unit_price": _to_float(lot.get("unit_price")),
                 "allocated_amount": _to_float(lot.get("allocated_amount")),
@@ -528,17 +659,24 @@ def save_tender(session, data: dict, source: str, username: str,
             for lot in data.get("lots", []) if (lot.get("name") or "").strip()
         ],
         "commission_members": [
-            {"full_name": cm.get("full_name"), "position": cm.get("position"), "role": cm.get("role")}
+            {"full_name": cm.get("full_name"), "position": cm.get("position"), "role": cm.get("role"),
+             "organization": _s(cm.get("organization")).strip() or "",
+             "is_present": _to_bool_or_none(cm.get("is_present")),
+             "absence_reason": _s(cm.get("absence_reason")).strip() or ""}
             for cm in data.get("commission_members", []) if (cm.get("full_name") or "").strip()
         ],
         "bids": [
             {
-                "bin": _s(b.get("bin")).strip(),
+                "bin": _s(b.get("bin")).strip() or None,
                 "status": _s(b.get("status")).strip() or None,
                 "is_winner": bool(b.get("is_winner")),
                 "is_second_place": bool(b.get("is_second_place")),
                 "offered_price": _to_float(b.get("offered_price")),
                 "rejection_reason": _s(b.get("rejection_reason")).strip() or None,
+                "application_no": _s(b.get("application_no")).strip() or "",
+                "supplier_address": _s(b.get("supplier_address")).strip() or "",
+                "load_factor": _ser(_to_float(b.get("load_factor"))),
+                "total_score": _ser(_to_float(b.get("total_score"))),
                 "criteria": [
                     {
                         "name": _s(c.get("name")).strip(),
